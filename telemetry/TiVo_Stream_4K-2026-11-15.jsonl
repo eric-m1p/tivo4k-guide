@@ -197,3 +197,4 @@
 {"ts":"2026-11-15T15:19:41Z","type":"heartbeat","device":"TiVo_Stream_4K","api":28,"seq":1,"event_key":"sling:08b6b9fef8a54c1281c715dfe3a4f0a1","title":"365BLK","watch_sec":8944,"engine":"webview","rebuffers":0,"heap_used_mb":5}
 {"ts":"2026-11-15T15:20:41Z","type":"heartbeat","device":"TiVo_Stream_4K","api":28,"seq":1,"event_key":"sling:08b6b9fef8a54c1281c715dfe3a4f0a1","title":"365BLK","watch_sec":9004,"engine":"webview","rebuffers":0,"heap_used_mb":4}
 {"ts":"2026-11-15T15:21:42Z","type":"heartbeat","device":"TiVo_Stream_4K","api":28,"seq":1,"event_key":"sling:08b6b9fef8a54c1281c715dfe3a4f0a1","title":"365BLK","watch_sec":9064,"engine":"webview","rebuffers":0,"heap_used_mb":5}
+{"ts":"2026-11-15T15:22:42Z","type":"heartbeat","device":"TiVo_Stream_4K","api":28,"seq":1,"event_key":"sling:08b6b9fef8a54c1281c715dfe3a4f0a1","title":"365BLK","watch_sec":9124,"engine":"webview","rebuffers":0,"heap_used_mb":4}
