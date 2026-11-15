@@ -416,3 +416,4 @@
 {"ts":"2026-11-15T18:53:50Z","type":"heartbeat","device":"TiVo_Stream_4K","api":28,"seq":1,"event_key":"ch:08b6b9fef8a54c1281c715dfe3a4f0a1","title":"365BLK","watch_sec":60,"engine":"webview","rebuffers":0,"heap_used_mb":5}
 {"ts":"2026-11-15T18:54:50Z","type":"heartbeat","device":"TiVo_Stream_4K","api":28,"seq":1,"event_key":"ch:08b6b9fef8a54c1281c715dfe3a4f0a1","title":"365BLK","watch_sec":120,"engine":"webview","rebuffers":0,"heap_used_mb":12}
 {"ts":"2026-11-15T18:55:50Z","type":"heartbeat","device":"TiVo_Stream_4K","api":28,"seq":1,"event_key":"ch:08b6b9fef8a54c1281c715dfe3a4f0a1","title":"365BLK","watch_sec":180,"engine":"webview","rebuffers":0,"heap_used_mb":10}
+{"ts":"2026-11-15T18:56:50Z","type":"heartbeat","device":"TiVo_Stream_4K","api":28,"seq":1,"event_key":"ch:08b6b9fef8a54c1281c715dfe3a4f0a1","title":"365BLK","watch_sec":240,"engine":"webview","rebuffers":0,"heap_used_mb":12}
