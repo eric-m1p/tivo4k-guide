@@ -607,6 +607,11 @@ def main() -> int:
         default=os.path.join(base_dir, "source_health.json"),
         help="persistent source health file",
     )
+    parser.add_argument(
+        "--source-blocklist",
+        default=os.path.join(base_dir, "source_blocklist.json"),
+        help='manual permanent denies: {"urls": {...}, "hosts": {...}}',
+    )
     args = parser.parse_args()
 
     now_sec = int(time.time())
@@ -641,6 +646,7 @@ def main() -> int:
             probe_budget=max(0, args.probe_budget),
             do_probe=args.probe_sources and not args.dry_run,
             workers=max(1, args.probe_workers),
+            blocklist_path=args.source_blocklist,
         )
     except Exception as exc:
         print(f"Warning: source health pass failed ({exc}); publishing untrimmed sources", file=sys.stderr)

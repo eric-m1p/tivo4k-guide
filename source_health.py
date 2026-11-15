@@ -9,7 +9,9 @@ module:
 - keeps a committed history (`source_health.json`) of ok/fail streaks;
 - ranks healthy, higher-quality mirrors first and caps each event at
   `MAX_SOURCES_PER_EVENT`;
-- quarantines a URL after repeated failures and retries it after a cooldown.
+- quarantines a URL after repeated failures and retries it after a cooldown;
+- permanently blocks URLs after definitive 404/410s or too many failed cycles,
+  plus an optional manual `source_blocklist.json`.
 
 Probing is deliberately conservative: if more than half of a CI run's probes
 fail (for example the runner's IP is blocked by several embed hosts), failure
@@ -26,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_STATE = "source_health.json"
+DEFAULT_BLOCKLIST = "source_blocklist.json"
 MAX_SOURCES_PER_EVENT = 8
 MAX_SOURCES_247 = 4
 PROBE_BUDGET = 3000
@@ -37,6 +40,9 @@ DISABLE_TOTAL = 8
 QUARANTINE_HOURS = (6, 12, 24, 72)
 KEEP_DAYS = 30
 FAILURE_TRUST_THRESHOLD = 0.65
+DEFINITIVE_STATUSES = {"404", "410"}
+PERMANENT_FAIL_TOTAL = 6
+PERMANENT_QUARANTINES = 2
 
 PROBE_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -72,6 +78,26 @@ def quality_rank(source: dict) -> int:
     return 2
 
 
+def _migrate_entry(entry: dict) -> None:
+    """Backfill block state for files written before permanent blocks existed."""
+    if not isinstance(entry, dict):
+        return
+    entry.setdefault("dead_fails", 0)
+    entry.setdefault("blocked", False)
+    status = str(entry.get("last_status") or "")
+    fail = int(entry.get("fail") or 0)
+    if status in DEFINITIVE_STATUSES and fail >= 2:
+        entry["dead_fails"] = max(int(entry.get("dead_fails") or 0), fail)
+    if int(entry.get("dead_fails") or 0) >= 2:
+        entry["blocked"] = True
+        entry.setdefault("blocked_reason", f"HTTP {status} x{entry['dead_fails']}")
+    elif fail >= PERMANENT_FAIL_TOTAL and int(entry.get("quarantines") or 0) >= PERMANENT_QUARANTINES:
+        entry["blocked"] = True
+        entry.setdefault("blocked_reason", f"failed {fail}x across {entry['quarantines']} quarantines")
+    if entry.get("blocked"):
+        entry["disabled_until"] = 0
+
+
 def _entry(state: dict, url: str) -> dict:
     entries = state.setdefault("sources", {})
     entry = entries.get(url)
@@ -85,6 +111,8 @@ def _entry(state: dict, url: str) -> dict:
     entry.setdefault("last_fail", 0)
     entry.setdefault("disabled_until", 0)
     entry.setdefault("quarantines", 0)
+    entry.setdefault("dead_fails", 0)
+    entry.setdefault("blocked", False)
     return entry
 
 
@@ -92,6 +120,8 @@ def load_state(path: str | os.PathLike) -> dict:
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         if isinstance(raw, dict) and isinstance(raw.get("sources"), dict):
+            for entry in raw["sources"].values():
+                _migrate_entry(entry)
             return raw
     except Exception:
         pass
@@ -107,6 +137,8 @@ def save_state(path: str | os.PathLike, state: dict, stats: dict) -> None:
     cutoff = now - KEEP_DAYS * 86400
     entries = state.get("sources", {})
     for url, entry in list(entries.items()):
+        if entry.get("blocked"):
+            continue
         last = max(int(entry.get("last_ok") or 0), int(entry.get("last_fail") or 0))
         if (int(entry.get("fail") or 0) <= 0 and int(entry.get("disabled_until") or 0) <= now):
             entries.pop(url, None)
@@ -126,7 +158,48 @@ def save_state(path: str | os.PathLike, state: dict, stats: dict) -> None:
 
 
 def is_disabled(entry: dict, now: int) -> bool:
-    return int(entry.get("disabled_until") or 0) > now
+    return bool(entry.get("blocked")) or int(entry.get("disabled_until") or 0) > now
+
+
+def is_blocked(entry: dict) -> bool:
+    return bool(entry.get("blocked"))
+
+
+def load_blocklist(path: str | os.PathLike | None) -> dict:
+    """Manual permanent denies: {"urls": [...], "hosts": [...]} (lists or maps)."""
+    result = {"urls": set(), "hosts": set(), "reasons": {}}
+    if not path:
+        return result
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return result
+    for key, bucket in (("urls", "urls"), ("hosts", "hosts")):
+        values = raw.get(bucket)
+        if isinstance(values, dict):
+            for item, reason in values.items():
+                result[key].add(str(item).strip())
+                result["reasons"][str(item).strip()] = str(reason)
+        elif isinstance(values, list):
+            for item in values:
+                result[key].add(str(item).strip())
+    result["urls"].discard("")
+    result["hosts"].discard("")
+    return result
+
+
+def host_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def is_manually_blocked(url: str, blocklist: dict) -> bool:
+    if not blocklist:
+        return False
+    return url in blocklist.get("urls", set()) or host_of(url) in blocklist.get("hosts", set())
 
 
 def _health_rank(entry: dict) -> tuple:
@@ -144,8 +217,10 @@ def ranked_sources(
     now: int,
     *,
     include_disabled: bool = False,
+    blocklist: dict | None = None,
 ) -> list[dict]:
     entries = state.get("sources", {})
+    blocklist = blocklist or {"urls": set(), "hosts": set()}
     out = []
     seen = set()
     for index, src in enumerate(sources or []):
@@ -153,6 +228,8 @@ def ranked_sources(
         if not url.startswith("https://") or url in seen:
             continue
         entry = entries.get(url, {})
+        if is_manually_blocked(url, blocklist):
+            continue
         if not include_disabled and is_disabled(entry, now):
             continue
         seen.add(url)
@@ -216,14 +293,28 @@ def _record(state: dict, url: str, ok: bool, detail: str, now: int, trust_failur
     if not trust_failures:
         return
     entry = _entry(state, url)
-    entry["last_status"] = str(detail)[:24]
+    status = str(detail)[:24]
+    entry["last_status"] = status
     entry["fail"] = min(int(entry.get("fail") or 0) + 1, 9999)
     entry["streak"] = min(int(entry.get("streak") or 0) + 1, 99)
     entry["last_fail"] = now
+    if status in DEFINITIVE_STATUSES:
+        entry["dead_fails"] = min(int(entry.get("dead_fails") or 0) + 1, 99)
+    if int(entry.get("dead_fails") or 0) >= 2:
+        entry["blocked"] = True
+        entry["blocked_reason"] = f"HTTP {status} x{entry['dead_fails']}"
+        entry["blocked_at"] = now
+        entry["disabled_until"] = 0
+        return
     if int(entry["streak"]) >= DISABLE_STREAK or int(entry["fail"]) >= DISABLE_TOTAL:
         q = min(int(entry.get("quarantines") or 0), len(QUARANTINE_HOURS) - 1)
         entry["disabled_until"] = now + QUARANTINE_HOURS[q] * 3600
         entry["quarantines"] = min(q + 1, len(QUARANTINE_HOURS) - 1)
+    if int(entry.get("fail") or 0) >= PERMANENT_FAIL_TOTAL and int(entry.get("quarantines") or 0) >= PERMANENT_QUARANTINES:
+        entry["blocked"] = True
+        entry["blocked_reason"] = f"failed {entry['fail']}x across {entry['quarantines']} quarantines"
+        entry["blocked_at"] = now
+        entry["disabled_until"] = 0
 
 
 def apply_source_health(
@@ -234,18 +325,20 @@ def apply_source_health(
     probe_budget: int = PROBE_BUDGET,
     do_probe: bool = True,
     workers: int = PROBE_WORKERS,
+    blocklist_path: str | os.PathLike | None = None,
 ) -> dict:
     """Probe, rank and trim sources on feed-shaped event dictionaries."""
     now = _now()
     state = load_state(state_path)
     entries = state.setdefault("sources", {})
+    blocklist = load_blocklist(blocklist_path)
 
     candidates_by_event: list[list[dict]] = []
     unique: list[str] = []
     seen: set[str] = set()
     for event in events:
         limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max(CANDIDATE_POOL, max_sources * 2)
-        pool = ranked_sources(event.get("sources") or [], state, now)[:limit]
+        pool = ranked_sources(event.get("sources") or [], state, now, blocklist=blocklist)[:limit]
         candidates_by_event.append(pool)
         for src in pool:
             url = str(src.get("url") or "").strip()
@@ -278,7 +371,7 @@ def apply_source_health(
     for index, event in enumerate(events):
         limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max_sources
         source_list = event.get("sources") or []
-        ranked = ranked_sources(source_list, state, now)
+        ranked = ranked_sources(source_list, state, now, blocklist=blocklist)
         selected = []
         for src in ranked:
             url = str(src.get("url") or "").strip()
@@ -313,6 +406,9 @@ def apply_source_health(
         "trimmed_events": trimmed,
         "empty_events": empty,
         "max_sources": max_sources,
+        "blocked": sum(1 for entry in entries.values() if entry.get("blocked")),
+        "manual_url_blocks": len(blocklist.get("urls", set())),
+        "manual_host_blocks": len(blocklist.get("hosts", set())),
     }
     if do_probe:
         save_state(state_path, state, stats)
@@ -320,7 +416,8 @@ def apply_source_health(
         "[health] "
         + (f"probed={stats['probed']} ok={stats['probe_ok']} failed={stats['probe_failed']} "
            if do_probe else "probe=off ")
-        + f"trimmed={trimmed} empty={empty} cap={max_sources}",
+        + f"trimmed={trimmed} empty={empty} cap={max_sources} "
+          f"blocked={stats['blocked']} manual={stats['manual_url_blocks']}u/{stats['manual_host_blocks']}h",
         flush=True,
     )
     return stats
