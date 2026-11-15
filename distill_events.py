@@ -165,6 +165,35 @@ def _is_generic(val: str) -> bool:
     return (val or "").strip().lower() in GENERIC_LABELS
 
 
+def _source_quality_rank(src: dict) -> int:
+    label = (src.get("label") or "").lower()
+    url = (src.get("url") or "").lower()
+    if (
+        "_540p" in url
+        or "_480p" in url
+        or "_360p" in url
+        or "540p" in label
+        or "480p" in label
+        or "360p" in label
+        or label.startswith("sd")
+        or " sd" in label
+        or "sd |" in label
+    ):
+        return 3
+    if any(k in label or k in url for k in ("4k", "uhd", "2160p", "1080p", "fhd")):
+        return 0
+    if (
+        label.startswith("hd")
+        or " hd" in label
+        or "hd |" in label
+        or "primary hd" in label
+        or "720p" in label
+        or "720p" in url
+    ):
+        return 1
+    return 2
+
+
 def _merge_events(existing: dict, incoming: dict) -> dict:
     seen_urls = {src["url"]: src for src in existing["sources"]}
     merged_sources = list(existing["sources"])
@@ -172,6 +201,7 @@ def _merge_events(existing: dict, incoming: dict) -> dict:
         if src["url"] not in seen_urls:
             seen_urls[src["url"]] = src
             merged_sources.append(src)
+    merged_sources.sort(key=_source_quality_rank)
 
     if existing["status"] == "always_live" or incoming["status"] == "always_live":
         status = "always_live"
@@ -241,6 +271,7 @@ def _extract_sources(stream_obj: dict, tag: str) -> list[dict]:
             }
         )
 
+    sources.sort(key=_source_quality_rank)
     return sources
 
 
