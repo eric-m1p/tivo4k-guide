@@ -10,6 +10,16 @@
       "quarantines": 1,
       "streak": 3
     },
+    "https://cinevid.sbs/embed/live/4946284": {
+      "disabled_until": 0,
+      "fail": 1,
+      "last_fail": 1794774815,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
+    },
     "https://cinevid.sbs/embed/live/737843389": {
       "disabled_until": 1794796164,
       "fail": 3,
@@ -334,12 +344,12 @@
   "stats": {
     "empty_events": 6,
     "max_sources": 8,
-    "probe_failed": 0,
-    "probe_ok": 1156,
+    "probe_failed": 1,
+    "probe_ok": 1155,
     "probed": 1156,
     "trimmed_events": 73,
     "trusted": true
   },
-  "updated_at": 1794774721,
+  "updated_at": 1794774831,
   "version": 1
 }
