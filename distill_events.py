@@ -571,6 +571,20 @@ def main() -> int:
     )
     parser.add_argument("--sc-concurrency", type=int, default=4, help="parallel StreamCorner workers")
     parser.add_argument("--sc-worker-asset", default="", help="override the site worker asset filename")
+    parser.add_argument(
+        "--probe-sources",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="probe source URLs before publishing and cap each event's list (default: on)",
+    )
+    parser.add_argument("--max-sources", type=int, default=8, help="max sources kept per event")
+    parser.add_argument("--probe-budget", type=int, default=3000, help="max unique URLs probed per run")
+    parser.add_argument("--probe-workers", type=int, default=32)
+    parser.add_argument(
+        "--source-health",
+        default=os.path.join(base_dir, "source_health.json"),
+        help="persistent source health file",
+    )
     args = parser.parse_args()
 
     now_sec = int(time.time())
@@ -595,6 +609,20 @@ def main() -> int:
     if not events:
         print("Error: upstream feed returned 0 active events", file=sys.stderr)
         return 1
+
+    try:
+        import source_health
+        source_health.apply_source_health(
+            events,
+            args.source_health,
+            max_sources=max(1, args.max_sources),
+            probe_budget=max(0, args.probe_budget),
+            do_probe=args.probe_sources,
+            workers=max(1, args.probe_workers),
+        )
+    except Exception as exc:
+        print(f"Warning: source health pass failed ({exc}); publishing untrimmed sources", file=sys.stderr)
+
     if not args.dry_run:
         save_json(events, now_sec, args.json)
     print_summary(events, args.status, args.sport)
