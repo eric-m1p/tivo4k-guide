@@ -1,7 +1,11 @@
 name: Refresh Live Events Feed
 
-# Pulls live, upcoming, and 24/7 embed streams directly from upstream APIs into
-# events.json so the Stream Sites TV app fetches from GitHub without a local server.
+# Pulls live, upcoming, and 24/7 embed streams from both upstream catalogues
+# into events.json, so the Stream Sites TV app fetches one GitHub file:
+#   - api.ppv.st (primary live-event API)
+#   - every StreamCorner provider through the site's own provider-data worker
+#     (NFL, NBA, UEFA Nations League, ALPHA, BETA, CHARLIE, #001, /extra,
+#      24/7 admin/channel lists)
 on:
   schedule:
     - cron: "*/30 * * * *"
@@ -17,7 +21,7 @@ concurrency:
 jobs:
   distill:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -25,8 +29,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Distill events feed
-        run: python3 distill_events.py --json events.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Install Playwright + Chromium
+        run: |
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Distill events feed (PPV + all StreamCorner providers)
+        run: |
+          python3 distill_events.py --streamcorner --json events.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Commit events.json if it changed
         run: |

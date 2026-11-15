@@ -4,9 +4,17 @@
 Pulls live, upcoming, and 24/7 embed streams from api.ppv.st and live score
 summaries from streambuddy.cc, deduplicates by stream ID and canonical event
 key, and writes a clean events.json feed consumed directly by the TV app.
+
+With `--streamcorner` it also calls every StreamCorner provider feed through the
+site's own provider-data worker (see streamcorner_api.py), then merges the two
+catalogues. That covers the /extra cards as well as NFL, NBA, UEFA Nations
+League, ALPHA, BETA, CHARLIE, #001, and the 24/7 admin/channel lists. Future
+events are kept even before a source appears, so the app's Upcoming tab is not
+empty; later runs fill in `streams[].embed_url` when the provider publishes it.
 """
 
 import argparse
+import asyncio
 import datetime
 import json
 import os
@@ -412,6 +420,100 @@ def distill_once() -> tuple[list[dict], int]:
     return events, now_sec
 
 
+def _event_from_feed_dict(record: dict, now_sec: int):
+    import streamcorner_api as sc
+
+    return sc.Event(
+        canonical_key=record["canonical_key"],
+        title=record.get("title", ""),
+        category=record.get("category", "Sports"),
+        league=record.get("league", ""),
+        status=record.get("status", "live"),
+        starts_at=int(record.get("starts_at") or 0),
+        ends_at=int(record.get("ends_at") or 0),
+        time_label=record.get("time_label", ""),
+        score_summary=record.get("score_summary", ""),
+        poster_url=record.get("poster_url", ""),
+        origins=list(record.get("origins") or []),
+        sources=[
+            sc.Source(
+                origin=str(src.get("origin") or ""),
+                label=str(src.get("label") or "Source"),
+                url=str(src.get("url") or ""),
+                kind=str(src.get("kind") or "embed"),
+                referer=str(src.get("referer") or sc.BASE + "/"),
+            )
+            for src in (record.get("sources") or [])
+            if src.get("url")
+        ],
+        updated_at=int(record.get("updated_at") or now_sec),
+    )
+
+
+def _feed_dict_from_event(event, now_sec: int) -> dict:
+    starts_iso = (
+        datetime.datetime.fromtimestamp(event.starts_at, datetime.timezone.utc).isoformat()
+        if event.starts_at > 0
+        else None
+    )
+    return {
+        "canonical_key": event.canonical_key,
+        "title": event.title,
+        "category": event.category,
+        "league": event.league,
+        "status": event.status,
+        "starts_at": event.starts_at,
+        "ends_at": event.ends_at,
+        "starts_at_iso": starts_iso,
+        "time_label": event.time_label,
+        "score_summary": event.score_summary,
+        "poster_url": event.poster_url,
+        "origins": event.origins,
+        "sources": [
+            {
+                "origin": src.origin,
+                "label": src.label,
+                "url": src.url,
+                "kind": src.kind,
+                "referer": src.referer,
+            }
+            for src in event.sources
+        ],
+        "updated_at": event.updated_at or now_sec,
+    }
+
+
+def merge_streamcorner_feed(
+    events: list[dict],
+    now_sec: int,
+    providers: list[str] | None = None,
+    concurrency: int = 4,
+    worker_asset: str | None = None,
+) -> tuple[list[dict], dict]:
+    """Fetch every StreamCorner provider and merge it into the PPV records."""
+    import streamcorner_api as sc
+
+    print(f"[extra] fetching StreamCorner providers (concurrency={concurrency}) ...", flush=True)
+    result = asyncio.run(
+        sc.fetch_all(
+            providers=providers,
+            concurrency=concurrency,
+            worker_asset=worker_asset or sc.WORKER_ASSET,
+        )
+    )
+    sc_events = [event for rows in result.values() for event in rows]
+    ppv_events = [_event_from_feed_dict(record, now_sec) for record in events]
+    merged = sc.merge_events(ppv_events, sc_events)
+    merged.sort(key=sc.sort_key)
+    counts = {provider: len(rows) for provider, rows in result.items()}
+    print(
+        "[extra] " + ", ".join(f"{p}={n}" for p, n in counts.items())
+        + f" -> {len(sc_events)} provider rows, {len(merged)} merged events",
+        flush=True,
+    )
+    return [_feed_dict_from_event(event, now_sec) for event in merged], counts
+
+
 def save_json(events: list[dict], now_sec: int, json_path: str) -> None:
     payload = {
         "synced_at": now_sec,
@@ -457,9 +559,39 @@ def main() -> int:
     parser.add_argument("--status", default="all", choices=["all", "live", "future", "always_live"])
     parser.add_argument("--sport", default="")
     parser.add_argument("--dry-run", action="store_true", help="Print summary without writing JSON")
+    parser.add_argument(
+        "--streamcorner",
+        action="store_true",
+        help="also fetch every StreamCorner provider feed and merge it in",
+    )
+    parser.add_argument(
+        "--sc-providers",
+        default="",
+        help="comma-separated StreamCorner provider ids (default: all)",
+    )
+    parser.add_argument("--sc-concurrency", type=int, default=4, help="parallel StreamCorner workers")
+    parser.add_argument("--sc-worker-asset", default="", help="override the site worker asset filename")
     args = parser.parse_args()
 
-    events, now_sec = distill_once()
+    now_sec = int(time.time())
+    try:
+        events, now_sec = distill_once()
+    except Exception as exc:
+        if not args.streamcorner:
+            raise
+        print(f"Warning: PPV feed failed ({exc}); continuing with StreamCorner only", file=sys.stderr)
+        events = []
+
+    if args.streamcorner:
+        providers = [p.strip() for p in args.sc_providers.split(",") if p.strip()] or None
+        events, _ = merge_streamcorner_feed(
+            events,
+            now_sec,
+            providers=providers,
+            concurrency=args.sc_concurrency,
+            worker_asset=args.sc_worker_asset or None,
+        )
+
     if not events:
         print("Error: upstream feed returned 0 active events", file=sys.stderr)
         return 1
