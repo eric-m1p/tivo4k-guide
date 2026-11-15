@@ -1,0 +1,49 @@
+name: Refresh channel guide (Now/Next)
+
+# Rebuilds channel_guide.json (≈6 h of listings for the Stream Sites TV channel
+# catalogue) from Sling Freestream's public guide. The schedule API needs an
+# anonymous token, which build_channel_guide.py borrows by loading the web
+# player once in headless Chromium. Listings cover ~5-6 h, so run every 2 h.
+on:
+  schedule:
+    - cron: "41 */2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: guide
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install -q requests playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Build channel_guide.json
+        run: python3 build_channel_guide.py --out channel_guide.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit channel_guide.json if it changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add channel_guide.json
+          if git diff --cached --quiet; then
+            echo "channel_guide.json unchanged."
+          else
+            git commit -m "Update channel guide $(date -u +%Y-%m-%dT%H:%MZ)"
+            git pull --rebase origin main
+            git push
+          fi
