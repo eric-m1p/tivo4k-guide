@@ -603,6 +603,11 @@ def main() -> int:
     parser.add_argument("--probe-budget", type=int, default=3000, help="max unique URLs probed per run")
     parser.add_argument("--probe-workers", type=int, default=32)
     parser.add_argument(
+        "--probe-all",
+        action="store_true",
+        help="probe every unique source, not just the top candidates per event",
+    )
+    parser.add_argument(
         "--source-health",
         default=os.path.join(base_dir, "source_health.json"),
         help="persistent source health file",
@@ -647,6 +652,7 @@ def main() -> int:
             do_probe=args.probe_sources and not args.dry_run,
             workers=max(1, args.probe_workers),
             blocklist_path=args.source_blocklist,
+            probe_all=args.probe_all,
         )
     except Exception as exc:
         print(f"Warning: source health pass failed ({exc}); publishing untrimmed sources", file=sys.stderr)

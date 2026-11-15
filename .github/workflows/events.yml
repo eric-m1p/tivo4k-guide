@@ -36,7 +36,8 @@ jobs:
 
       - name: Distill events feed (PPV + all StreamCorner providers)
         run: |
-          python3 distill_events.py --streamcorner --probe-sources \
+          python3 distill_events.py --streamcorner --probe-sources --probe-all \
+            --probe-workers 64 --probe-budget 6000 \
             --max-sources 8 --json events.json \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
