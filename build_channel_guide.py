@@ -86,7 +86,7 @@ def main() -> int:
         default_out = HERE / "channel_guide.json"
     ap.add_argument("--out", default=str(default_out))
     ap.add_argument("--limit", type=int, default=0, help="only the first N channels")
-    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--headed", action="store_true")
     ar = ap.parse_args()
 
@@ -107,20 +107,38 @@ def main() -> int:
     def fetch(c):
         return c["id"], fx.fetch_schedule(session, state, c.get("schedule_url"))
 
+    def to_rows(progs):
+        rows = []
+        for p in progs:
+            s, e = to_epoch(p.get("start")), to_epoch(p.get("end"))
+            if s is None or e is None or e <= s:
+                continue
+            rows.append([s, e, p["title"], episode_of(p)])
+        return rows
+
     t0 = time.time()
     out: dict[str, list] = {}
     with ThreadPoolExecutor(max_workers=max(1, ar.workers)) as pool:
         for i, (cid, progs) in enumerate(pool.map(fetch, catalogue), 1):
-            rows = []
-            for p in progs:
-                s, e = to_epoch(p.get("start")), to_epoch(p.get("end"))
-                if s is None or e is None or e <= s:
-                    continue
-                rows.append([s, e, p["title"], episode_of(p)])
+            rows = to_rows(progs)
             if rows:
                 out[cid] = rows
             if i % 50 == 0 or i == len(catalogue):
                 print(f"      {i}/{len(catalogue)}")
+
+    # Bursts can get a run of channels refused (seen in CI: whole categories
+    # empty). Retry the empty ones slowly, one at a time.
+    for attempt in (1, 2):
+        missing = [c for c in catalogue if c["id"] not in out]
+        if not missing:
+            break
+        print(f"      retry {attempt}: {len(missing)} channels without listings")
+        time.sleep(5 * attempt)
+        for c in missing:
+            rows = to_rows(fetch(c)[1])
+            if rows:
+                out[c["id"]] = rows
+            time.sleep(0.4 * attempt)
 
     doc = {"v": 1, "generated": int(time.time()), "ch": out}
     path = Path(ar.out)
