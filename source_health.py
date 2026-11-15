@@ -494,7 +494,20 @@ def apply_source_health(
     unique: list[str] = []
     seen: set[str] = set()
     all_unique: set[str] = set()
+    raw_unique: set[str] = set()
+    blocked_in_feed: set[str] = set()
+    quarantined_in_feed: set[str] = set()
     for event in events:
+        for src in event.get("sources") or []:
+            url = str(src.get("url") or "").strip()
+            if not url.startswith("https://"):
+                continue
+            raw_unique.add(url)
+            entry = entries.get(url, {})
+            if is_manually_blocked(url, blocklist) or is_blocked(entry):
+                blocked_in_feed.add(url)
+            elif is_disabled(entry, now):
+                quarantined_in_feed.add(url)
         limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max(CANDIDATE_POOL, max_sources * 2)
         ranked = ranked_sources(event.get("sources") or [], state, now, blocklist=blocklist)
         pool = ranked if probe_all else ranked[:limit]
@@ -590,7 +603,10 @@ def apply_source_health(
         "trimmed_events": trimmed,
         "empty_events": empty,
         "max_sources": max_sources,
+        "sources_raw": len(raw_unique),
         "sources_seen": len(all_unique),
+        "sources_blocked": len(blocked_in_feed),
+        "sources_quarantined": len(quarantined_in_feed),
         "unprobed": max(0, len(all_unique) - len(set(unique))),
         "probe_all": probe_all,
         "blocked": sum(1 for entry in entries.values() if entry.get("blocked")),
@@ -603,9 +619,11 @@ def apply_source_health(
         "[health] "
         + (f"probed={stats['probed']} ok={stats['probe_ok']} failed={stats['probe_failed']} "
            if do_probe else "probe=off ")
-        + f"seen={stats['sources_seen']} unprobed={stats['unprobed']} "
+        + f"raw={stats['sources_raw']} seen={stats['sources_seen']} "
+          f"blocked={stats['sources_blocked']} quarantined={stats['sources_quarantined']} "
+          f"unprobed={stats['unprobed']} "
           f"trimmed={trimmed} empty={empty} cap={max_sources} "
-          f"blocked={stats['blocked']} manual={stats['manual_url_blocks']}u/{stats['manual_host_blocks']}h",
+          f"blocked_state={stats['blocked']} manual={stats['manual_url_blocks']}u/{stats['manual_host_blocks']}h",
         flush=True,
     )
     return stats

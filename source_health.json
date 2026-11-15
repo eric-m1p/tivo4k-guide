@@ -77,17 +77,19 @@
     },
     "https://cinevid.sbs/embed/live/228951788": {
       "bitrate": 0,
-      "blocked": false,
-      "dead_fails": 1,
+      "blocked": true,
+      "blocked_at": 1794779098,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
       "disabled_until": 0,
-      "fail": 1,
+      "fail": 2,
       "height": 0,
-      "last_fail": 1794778866,
+      "last_fail": 1794779098,
       "last_ok": 0,
       "last_status": "404",
       "ok": 0,
       "quarantines": 0,
-      "streak": 1
+      "streak": 2
     },
     "https://cinevid.sbs/embed/live/2487565": {
       "bitrate": 0,
@@ -220,6 +222,20 @@
       "quarantines": 1,
       "streak": 3
     },
+    "https://cinevid.sbs/embed/live/8950085": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794779098,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
+    },
     "https://cinevid.sbs/embed/live/8957675": {
       "blocked": true,
       "blocked_reason": "HTTP 404 x3",
@@ -277,17 +293,19 @@
     },
     "https://cinevid.sbs/embed/live/T000029": {
       "bitrate": 0,
-      "blocked": false,
-      "dead_fails": 1,
+      "blocked": true,
+      "blocked_at": 1794779098,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
       "disabled_until": 0,
-      "fail": 1,
+      "fail": 2,
       "height": 0,
-      "last_fail": 1794778866,
+      "last_fail": 1794779098,
       "last_ok": 0,
       "last_status": "404",
       "ok": 0,
       "quarantines": 0,
-      "streak": 1
+      "streak": 2
     },
     "https://cinevid.sbs/embed/live/T000032": {
       "bitrate": 0,
@@ -742,23 +760,54 @@
       "ok": 0,
       "quarantines": 0,
       "streak": 2
+    },
+    "https://strmfree.st/embed/soccer/czechia-vs-croatia1080p2": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794779098,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
+    },
+    "https://strmfree.st/embed/soccer/t\u00fcrkiye-vs-france1080p2": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794779098,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
     }
   },
   "stats": {
-    "blocked": 27,
+    "blocked": 29,
     "empty_events": 6,
     "manual_host_blocks": 0,
     "manual_url_blocks": 0,
     "max_sources": 8,
     "probe_all": true,
-    "probe_failed": 10,
-    "probe_ok": 1287,
-    "probed": 1297,
-    "sources_seen": 1297,
+    "probe_failed": 5,
+    "probe_ok": 1285,
+    "probed": 1290,
+    "sources_blocked": 20,
+    "sources_quarantined": 14,
+    "sources_raw": 1324,
+    "sources_seen": 1290,
     "trimmed_events": 69,
     "trusted": true,
     "unprobed": 0
   },
-  "updated_at": 1794778881,
+  "updated_at": 1794779115,
   "version": 1
 }

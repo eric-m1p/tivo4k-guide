@@ -108,6 +108,7 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="max events to probe (0 = all)")
     ap.add_argument("--show", type=int, default=12, help="events to print on the console")
     ap.add_argument("--pool", type=int, default=24, help="candidate sources examined per event")
+    ap.add_argument("--probe-all", action="store_true", help="examine every source, ignoring --pool")
     ap.add_argument("--max-sources", type=int, default=8, help="healthy sources kept by --apply-out")
     ap.add_argument("--budget", type=int, default=2500, help="max unique URLs probed")
     ap.add_argument("--workers", type=int, default=32)
@@ -162,7 +163,9 @@ def main() -> int:
             now,
             include_disabled=args.include_blocked,
             blocklist=blocklist,
-        )[: max(1, args.pool)]
+        )
+        if not args.probe_all:
+            sources = sources[: max(1, args.pool)]
         candidates_by_event.append(sources)
         for src in sources:
             url = str(src.get("url") or "").strip()
@@ -175,7 +178,13 @@ def main() -> int:
 
     if args.write_health:
         for url, result in results.items():
-            sh._record(state, url, bool(result["ok"]), str(result["status"]), now, trust_failures=True)
+            sh._record(
+                state, url, bool(result["ok"]), str(result["status"]), now,
+                trust_failures=True,
+                height=int(result.get("height") or 0),
+                bitrate=int(result.get("bitrate") or 0),
+                manifest=str(result.get("manifest") or ""),
+            )
         sh.save_state(health_path, state, {
             "probed": len(results),
             "probe_ok": sum(1 for r in results.values() if r["ok"]),
@@ -200,13 +209,20 @@ def main() -> int:
             if probe is None:
                 skipped += 1
                 continue
+            height = int(probe.get("height") or 0)
+            quality_src = {"height": height, "label": src.get("label"), "url": url}
             rows.append({
                 "label": _source_label(src),
                 "url": url,
                 "host": sh.host_of(url),
                 "origin": str(src.get("origin") or ""),
                 "referer": str(src.get("referer") or "https://streamcorner.cloud/"),
-                "quality": sh.quality_rank(src),
+                "quality": sh.quality_rank(quality_src),
+                "quality_text": sh._quality_label(height) or QUALITY_LABEL.get(sh.quality_rank(quality_src), "?"),
+                "height": height,
+                "bitrate": int(probe.get("bitrate") or 0),
+                "verified": bool(probe.get("verified")),
+                "manifest": str(probe.get("manifest") or ""),
                 "ok": bool(probe["ok"]),
                 "status": str(probe["status"]),
                 "latency_ms": int(probe.get("latency_ms") or 0),
@@ -266,7 +282,7 @@ def main() -> int:
             mark = "OK  " if row["ok"] else "FAIL"
             latency = f"{row['latency_ms']:>5}ms" if row["ok"] else "     —"
             print(
-                f"  #{row['rank']:<2} {mark} {QUALITY_LABEL.get(row['quality'], '?'):9} "
+                f"  #{row['rank']:<2} {mark} {row['quality_text']:9} "
                 f"{latency}  {row['label'][:36]:36}  {_short_url(row['url'])}"
             )
         print()
@@ -324,7 +340,7 @@ def main() -> int:
                 ["#", "State", "Quality", "Latency", "Source", "Host", "Fails"],
                 [
                     [row["rank"], "OK" if row["ok"] else row["status"],
-                     QUALITY_LABEL.get(row["quality"], "?"),
+                     row.get("quality_text", QUALITY_LABEL.get(row["quality"], "?")),
                      f"{row['latency_ms']} ms" if row["ok"] else "—",
                      row["label"], row["host"], row["fails"]]
                     for row in report["stack"] if row["ok"] or args.show_bad
@@ -351,6 +367,10 @@ def main() -> int:
                     "url": row["url"],
                     "kind": "embed",
                     "referer": row.get("referer", "https://streamcorner.cloud/"),
+                    "height": row.get("height", 0),
+                    "bitrate": row.get("bitrate", 0),
+                    "verified": bool(row.get("verified")),
+                    "quality": row.get("quality_text", ""),
                 })
                 if len(keep) >= max(1, args.max_sources):
                     break
