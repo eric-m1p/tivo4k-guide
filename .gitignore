@@ -1,0 +1,5 @@
+epg-grabber/
+.cache/
+guide.xml
+guide.fallback.xml
+__pycache__/

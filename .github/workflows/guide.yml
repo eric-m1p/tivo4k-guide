@@ -1,0 +1,72 @@
+name: Rebuild TV guide
+
+# Rebuilds guide.xml.gz from the channel list in tivo4k.m3u (channel lines only,
+# no stream links) using the iptv-org/epg grabbers plus Pluto TV / Samsung TV Plus
+# listings from i.mjh.nz, then commits it if it changed.
+on:
+  schedule:
+    - cron: "17 10 * * *"   # daily, ~2-3 AM Pacific
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: guide
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch iptv-org guide index
+        run: |
+          mkdir -p .cache
+          curl -sfL -o .cache/guides.json https://iptv-org.github.io/api/guides.json
+
+      - name: Install iptv-org/epg grabber
+        run: |
+          git clone --depth 1 -q https://github.com/iptv-org/epg.git epg-grabber
+          cd epg-grabber && npm install --no-audit --no-fund
+
+      - name: Grab listings (primary sources)
+        run: |
+          python3 make_epg_channels.py
+          cd epg-grabber
+          npm run grab --- --channels=tivo4k.channels.xml --output=../guide.xml \
+            --days=2 --maxConnections=10 --timeout=15000 | grep -E 'saving|done|ERR' | sort | uniq -c || true
+
+      - name: Grab listings (fallback sources for empty channels)
+        run: |
+          rm -f guide.fallback.xml
+          python3 merge_guides.py > /dev/null
+          python3 make_epg_channels.py --fallback
+          cd epg-grabber
+          npm run grab --- --channels=tivo4k.fallback.channels.xml --output=../guide.fallback.xml \
+            --days=2 --maxConnections=10 --timeout=15000 | grep -E 'saving|done|ERR' | sort | uniq -c || true
+
+      - name: Merge with Pluto / Samsung listings
+        run: python3 merge_guides.py | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit guide if it changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add guide.xml.gz
+          if git diff --cached --quiet; then
+            echo "Guide unchanged."
+          else
+            git commit -m "Update guide $(date -u +%Y-%m-%d)"
+            git push
+          fi
