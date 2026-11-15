@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -34,6 +35,8 @@ MAX_SOURCES_247 = 4
 PROBE_BUDGET = 3000
 PROBE_WORKERS = 32
 PROBE_TIMEOUT = 8
+PROBE_BODY_LIMIT = 64 * 1024
+MANIFEST_LIMIT = 96 * 1024
 CANDIDATE_POOL = 16
 DISABLE_STREAK = 3
 DISABLE_TOTAL = 8
@@ -60,6 +63,13 @@ def _now() -> int:
 
 def quality_rank(source: dict) -> int:
     """0 = 4K/1080p, 1 = HD/720p, 2 = unknown, 3 = SD. Matches the app."""
+    height = int(source.get("height") or 0)
+    if height >= 1080:
+        return 0
+    if height >= 720:
+        return 1
+    if height > 0:
+        return 3
     label = str(source.get("label") or "").lower()
     url = str(source.get("url") or "").lower()
     if (
@@ -113,6 +123,8 @@ def _entry(state: dict, url: str) -> dict:
     entry.setdefault("quarantines", 0)
     entry.setdefault("dead_fails", 0)
     entry.setdefault("blocked", False)
+    entry.setdefault("height", 0)
+    entry.setdefault("bitrate", 0)
     return entry
 
 
@@ -140,6 +152,8 @@ def save_state(path: str | os.PathLike, state: dict, stats: dict) -> None:
         if entry.get("blocked"):
             continue
         last = max(int(entry.get("last_ok") or 0), int(entry.get("last_fail") or 0))
+        if (int(entry.get("height") or 0) > 0):
+            continue
         if (int(entry.get("fail") or 0) <= 0 and int(entry.get("disabled_until") or 0) <= now):
             entries.pop(url, None)
         elif last < cutoff and int(entry.get("disabled_until") or 0) <= now:
@@ -228,6 +242,11 @@ def ranked_sources(
         if not url.startswith("https://") or url in seen:
             continue
         entry = entries.get(url, {})
+        if not src.get("height") and int(entry.get("height") or 0) > 0:
+            src = dict(src)
+            src["height"] = int(entry.get("height") or 0)
+            src["bitrate"] = int(entry.get("bitrate") or 0)
+            src["verified"] = True
         if is_manually_blocked(url, blocklist):
             continue
         if not include_disabled and is_disabled(entry, now):
@@ -242,12 +261,100 @@ def ranked_sources(
     return [item[0] for item in out]
 
 
-def _probe_one(url: str, timeout: int = PROBE_TIMEOUT) -> tuple[str, bool, str, int]:
+def _read_limited(response, limit: int) -> bytes:
+    chunks = []
+    total = 0
+    try:
+        for chunk in response.iter_content(8192):
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= limit:
+                break
+    except Exception:
+        pass
+    return b"".join(chunks)[:limit]
+
+
+def _manifest_from_text(text: str) -> str:
+    text = text.replace("\\/", "/")
+    match = re.search(r'https?://[^\s"\'<>]+?\.(?:m3u8|mpd)(?:\?[^\s"\'<>]*)?', text, re.I)
+    return match.group(0) if match else ""
+
+
+def _quality_from_manifest(text: str) -> tuple[int, int]:
+    height = 0
+    bitrate = 0
+    for match in re.finditer(r"RESOLUTION=(\d+)x(\d+)", text, re.I):
+        height = max(height, int(match.group(2)))
+    for match in re.finditer(r"BANDWIDTH=(\d+)", text, re.I):
+        bitrate = max(bitrate, int(match.group(1)))
+    for tag in re.findall(r"<Representation\b[^>]*>", text, re.I):
+        h = re.search(r'height="(\d+)"', tag, re.I)
+        b = re.search(r'bandwidth="(\d+)"', tag, re.I)
+        if h:
+            height = max(height, int(h.group(1)))
+        if b:
+            bitrate = max(bitrate, int(b.group(1)))
+    return height, bitrate
+
+
+def _quality_meta(url: str, text: str, headers: dict, timeout: int) -> dict:
+    height = 0
+    bitrate = 0
+    manifest = ""
+    lowered = url.lower().split("?")[0]
+    if lowered.endswith((".m3u8", ".mpd")):
+        manifest = url
+        height, bitrate = _quality_from_manifest(text)
+    else:
+        found = _manifest_from_text(text)
+        if found:
+            manifest = found
+            try:
+                import requests
+                with requests.get(
+                    found,
+                    headers={**headers, "Referer": url},
+                    timeout=(timeout, timeout),
+                    stream=True,
+                    allow_redirects=True,
+                ) as response:
+                    if 200 <= response.status_code < 400:
+                        body = _read_limited(response, MANIFEST_LIMIT).decode("utf-8", "replace")
+                        height, bitrate = _quality_from_manifest(body)
+            except Exception:
+                pass
+    return {
+        "height": height,
+        "bitrate": bitrate,
+        "manifest": manifest[:400],
+        "verified": height > 0,
+        "quality": _quality_label(height),
+    }
+
+
+def _quality_label(height: int) -> str:
+    if height >= 2160:
+        return "4K"
+    if height >= 1080:
+        return "1080p"
+    if height >= 720:
+        return "720p"
+    if height >= 480:
+        return "480p"
+    if height > 0:
+        return "SD"
+    return ""
+
+
+def _probe_one(url: str, timeout: int = PROBE_TIMEOUT) -> tuple[str, bool, str, int, dict]:
     started = time.monotonic()
     try:
         import requests  # imported lazily so --no-probe-sources has no dependency
     except Exception as exc:  # pragma: no cover - configuration error
-        return url, False, "requests missing: " + str(exc)[:60], 0
+        return url, False, "requests missing: " + str(exc)[:60], 0, {}
 
     try:
         with requests.get(
@@ -258,15 +365,16 @@ def _probe_one(url: str, timeout: int = PROBE_TIMEOUT) -> tuple[str, bool, str, 
             allow_redirects=True,
         ) as response:
             code = response.status_code
-            try:
-                next(response.iter_content(1024), b"")
-            except Exception:
-                pass
+            ctype = response.headers.get("content-type", "")
+            body = _read_limited(response, PROBE_BODY_LIMIT)
+            text = body.decode("utf-8", "replace")
+            meta = _quality_meta(url, text, PROBE_HEADERS, timeout)
+            meta["content_type"] = ctype[:80]
             latency_ms = int((time.monotonic() - started) * 1000)
-            return url, 200 <= code < 400, str(code), latency_ms
+            return url, 200 <= code < 400, str(code), latency_ms, meta
     except Exception as exc:
         latency_ms = int((time.monotonic() - started) * 1000)
-        return url, False, type(exc).__name__, latency_ms
+        return url, False, type(exc).__name__, latency_ms, {}
 
 
 def probe_sources(
@@ -289,24 +397,53 @@ def probe_sources_detailed(
         for future in as_completed(futures):
             url = futures[future]
             try:
-                _, ok, detail, latency_ms = future.result()
+                _, ok, detail, latency_ms, meta = future.result()
             except Exception as exc:
-                ok, detail, latency_ms = False, type(exc).__name__, 0
+                ok, detail, latency_ms, meta = False, type(exc).__name__, 0, {}
             status = str(detail)
             results[url] = {
                 "ok": ok,
                 "status": status,
                 "latency_ms": latency_ms,
                 "error": "" if status.isdigit() else status,
+                "height": int(meta.get("height") or 0),
+                "bitrate": int(meta.get("bitrate") or 0),
+                "manifest": str(meta.get("manifest") or ""),
+                "verified": bool(meta.get("verified")),
+                "quality": str(meta.get("quality") or ""),
+                "content_type": str(meta.get("content_type") or ""),
             }
     return results
 
 
-def _record(state: dict, url: str, ok: bool, detail: str, now: int, trust_failures: bool) -> None:
+def _record(state: dict, url: str, ok: bool, detail: str, now: int,
+            trust_failures: bool, height: int = 0, bitrate: int = 0,
+            manifest: str = "") -> None:
     entries = state.setdefault("sources", {})
     if ok:
-        # A working URL needs no history. Keeping only problem URLs makes the
-        # committed JSON small and its diffs readable.
+        entry = entries.get(url)
+        if int(height or 0) > 0:
+            entry = _entry(state, url)
+            entry["height"] = int(height)
+            entry["bitrate"] = int(bitrate or 0)
+            if manifest:
+                entry["manifest"] = manifest[:300]
+            entry["verified"] = True
+            entry["fail"] = 0
+            entry["streak"] = 0
+            entry["disabled_until"] = 0
+            entry["blocked"] = False
+            entry.pop("blocked_reason", None)
+            entry.pop("blocked_at", None)
+            if not entry.get("last_ok"):
+                entry["last_ok"] = now
+            return
+        if entry and int(entry.get("height") or 0) > 0:
+            entry["fail"] = 0
+            entry["streak"] = 0
+            entry["disabled_until"] = 0
+            return
+        # A working URL with no measured quality needs no history.
         entries.pop(url, None)
         return
     if not trust_failures:
@@ -345,6 +482,7 @@ def apply_source_health(
     do_probe: bool = True,
     workers: int = PROBE_WORKERS,
     blocklist_path: str | os.PathLike | None = None,
+    probe_all: bool = False,
 ) -> dict:
     """Probe, rank and trim sources on feed-shaped event dictionaries."""
     now = _now()
@@ -355,20 +493,27 @@ def apply_source_health(
     candidates_by_event: list[list[dict]] = []
     unique: list[str] = []
     seen: set[str] = set()
+    all_unique: set[str] = set()
     for event in events:
         limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max(CANDIDATE_POOL, max_sources * 2)
-        pool = ranked_sources(event.get("sources") or [], state, now, blocklist=blocklist)[:limit]
+        ranked = ranked_sources(event.get("sources") or [], state, now, blocklist=blocklist)
+        pool = ranked if probe_all else ranked[:limit]
         candidates_by_event.append(pool)
         for src in pool:
             url = str(src.get("url") or "").strip()
-            if url and url not in seen and len(unique) < probe_budget:
+            if not url:
+                continue
+            all_unique.add(url)
+            if url not in seen and len(unique) < probe_budget:
                 seen.add(url)
                 unique.append(url)
 
     results: dict[str, tuple[bool, str]] = {}
     trusted = True
+    detailed: dict[str, dict] = {}
     if do_probe and unique:
-        results = probe_sources(unique, workers=workers)
+        detailed = probe_sources_detailed(unique, workers=workers)
+        results = {url: (info["ok"], info["status"]) for url, info in detailed.items()}
         checked = len(results)
         failed = sum(1 for ok, _ in results.values() if not ok)
         failure_rate = failed / checked if checked else 0.0
@@ -379,8 +524,14 @@ def apply_source_health(
                 "ignoring failures this run (runner network looks blocked)",
                 flush=True,
             )
-        for url, (ok, detail) in results.items():
-            _record(state, url, ok, detail, now, trust_failures=trusted)
+        for url, info in detailed.items():
+            _record(
+                state, url, bool(info["ok"]), str(info["status"]), now,
+                trust_failures=trusted,
+                height=int(info.get("height") or 0),
+                bitrate=int(info.get("bitrate") or 0),
+                manifest=str(info.get("manifest") or ""),
+            )
         if not trusted:
             # Do not demote anything when the runner's probes look blocked.
             results = {url: value for url, value in results.items() if value[0]}
@@ -390,6 +541,20 @@ def apply_source_health(
     for index, event in enumerate(events):
         limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max_sources
         source_list = event.get("sources") or []
+        for src in source_list:
+            url = str(src.get("url") or "").strip()
+            info = detailed.get(url)
+            entry = entries.get(url, {})
+            if info:
+                if int(info.get("height") or 0) > 0:
+                    src["height"] = int(info["height"])
+                    src["bitrate"] = int(info.get("bitrate") or 0)
+                    src["verified"] = True
+                    src["quality"] = str(info.get("quality") or "")
+            elif int(entry.get("height") or 0) > 0:
+                src["height"] = int(entry["height"])
+                src["bitrate"] = int(entry.get("bitrate") or 0)
+                src["verified"] = True
         ranked = ranked_sources(source_list, state, now, blocklist=blocklist)
         selected = []
         for src in ranked:
@@ -425,6 +590,9 @@ def apply_source_health(
         "trimmed_events": trimmed,
         "empty_events": empty,
         "max_sources": max_sources,
+        "sources_seen": len(all_unique),
+        "unprobed": max(0, len(all_unique) - len(set(unique))),
+        "probe_all": probe_all,
         "blocked": sum(1 for entry in entries.values() if entry.get("blocked")),
         "manual_url_blocks": len(blocklist.get("urls", set())),
         "manual_host_blocks": len(blocklist.get("hosts", set())),
@@ -435,7 +603,8 @@ def apply_source_health(
         "[health] "
         + (f"probed={stats['probed']} ok={stats['probe_ok']} failed={stats['probe_failed']} "
            if do_probe else "probe=off ")
-        + f"trimmed={trimmed} empty={empty} cap={max_sources} "
+        + f"seen={stats['sources_seen']} unprobed={stats['unprobed']} "
+          f"trimmed={trimmed} empty={empty} cap={max_sources} "
           f"blocked={stats['blocked']} manual={stats['manual_url_blocks']}u/{stats['manual_host_blocks']}h",
         flush=True,
     )

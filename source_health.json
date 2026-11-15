@@ -54,6 +54,20 @@
       "quarantines": 0,
       "streak": 2
     },
+    "https://cinevid.sbs/embed/live/659749367": {
+      "blocked": true,
+      "blocked_at": 1794778478,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
+      "disabled_until": 0,
+      "fail": 2,
+      "last_fail": 1794778478,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 2
+    },
     "https://cinevid.sbs/embed/live/737843389": {
       "blocked": true,
       "blocked_reason": "HTTP 404 x3",
@@ -118,6 +132,20 @@
       "ok": 0,
       "quarantines": 1,
       "streak": 3
+    },
+    "https://cinevid.sbs/embed/live/T000032": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794778604,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
     },
     "https://es.matchora.pro/embed/channel/107589": {
       "blocked": false,
@@ -457,6 +485,92 @@
       "quarantines": 0,
       "streak": 2
     },
+    "https://strmfree.st/embed/football/buffalo-bills-vs-new-york-jets1080p": {
+      "blocked": true,
+      "blocked_at": 1794778478,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
+      "disabled_until": 0,
+      "fail": 2,
+      "last_fail": 1794778478,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 2
+    },
+    "https://strmfree.st/embed/football/carolina-panthers-vs-new-orleans-saints1080p": {
+      "blocked": true,
+      "blocked_at": 1794778478,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
+      "disabled_until": 0,
+      "fail": 2,
+      "last_fail": 1794778478,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 2
+    },
+    "https://strmfree.st/embed/football/houston-texans-vs-cleveland-browns1080p": {
+      "blocked": true,
+      "blocked_at": 1794778478,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
+      "disabled_until": 0,
+      "fail": 2,
+      "last_fail": 1794778478,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 2
+    },
+    "https://strmfree.st/embed/football/jacksonville-jaguars-vs-tennessee-titans1080p": {
+      "blocked": true,
+      "blocked_at": 1794778478,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
+      "disabled_until": 0,
+      "fail": 2,
+      "last_fail": 1794778478,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 2
+    },
+    "https://strmfree.st/embed/football/kansas-city-chiefs-vs-atlanta-falcons1080p": {
+      "blocked": true,
+      "blocked_at": 1794778478,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
+      "disabled_until": 0,
+      "fail": 2,
+      "last_fail": 1794778478,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 2
+    },
+    "https://strmfree.st/embed/football/miami-dolphins-vs-indianapolis-colts1080p": {
+      "bitrate": 0,
+      "blocked": true,
+      "blocked_at": 1794778604,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
+      "disabled_until": 0,
+      "fail": 2,
+      "height": 0,
+      "last_fail": 1794778604,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 2
+    },
     "https://strmfree.st/embed/football/minnesota-vikings-vs-green-bay-packers1080p": {
       "blocked": true,
       "blocked_at": 1794777245,
@@ -473,17 +587,20 @@
     }
   },
   "stats": {
-    "blocked": 11,
-    "empty_events": 7,
+    "blocked": 18,
+    "empty_events": 5,
     "manual_host_blocks": 0,
     "manual_url_blocks": 0,
     "max_sources": 8,
-    "probe_failed": 4,
-    "probe_ok": 1142,
-    "probed": 1146,
-    "trimmed_events": 73,
-    "trusted": true
+    "probe_all": true,
+    "probe_failed": 2,
+    "probe_ok": 1297,
+    "probed": 1299,
+    "sources_seen": 1299,
+    "trimmed_events": 68,
+    "trusted": true,
+    "unprobed": 0
   },
-  "updated_at": 1794777268,
+  "updated_at": 1794778622,
   "version": 1
 }
