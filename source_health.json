@@ -13,6 +13,48 @@
       "quarantines": 1,
       "streak": 3
     },
+    "https://cinevid.sbs/embed/live/110449624": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794778732,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
+    },
+    "https://cinevid.sbs/embed/live/133454530": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794778732,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
+    },
+    "https://cinevid.sbs/embed/live/150332302": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794778732,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
+    },
     "https://cinevid.sbs/embed/live/1982092": {
       "blocked": true,
       "blocked_at": 1794777245,
@@ -26,6 +68,34 @@
       "ok": 0,
       "quarantines": 0,
       "streak": 2
+    },
+    "https://cinevid.sbs/embed/live/2487565": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794778732,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
+    },
+    "https://cinevid.sbs/embed/live/258753374": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794778732,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
     },
     "https://cinevid.sbs/embed/live/4946284": {
       "blocked": true,
@@ -54,6 +124,20 @@
       "quarantines": 0,
       "streak": 2
     },
+    "https://cinevid.sbs/embed/live/594242941": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794778732,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
+    },
     "https://cinevid.sbs/embed/live/659749367": {
       "blocked": true,
       "blocked_at": 1794778478,
@@ -80,6 +164,20 @@
       "ok": 0,
       "quarantines": 1,
       "streak": 3
+    },
+    "https://cinevid.sbs/embed/live/853367839": {
+      "bitrate": 0,
+      "blocked": false,
+      "dead_fails": 1,
+      "disabled_until": 0,
+      "fail": 1,
+      "height": 0,
+      "last_fail": 1794778732,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 1
     },
     "https://cinevid.sbs/embed/live/870735424": {
       "blocked": true,
@@ -133,19 +231,35 @@
       "quarantines": 1,
       "streak": 3
     },
-    "https://cinevid.sbs/embed/live/T000032": {
+    "https://cinevid.sbs/embed/live/T000026": {
       "bitrate": 0,
       "blocked": false,
       "dead_fails": 1,
       "disabled_until": 0,
       "fail": 1,
       "height": 0,
-      "last_fail": 1794778604,
+      "last_fail": 1794778732,
       "last_ok": 0,
       "last_status": "404",
       "ok": 0,
       "quarantines": 0,
       "streak": 1
+    },
+    "https://cinevid.sbs/embed/live/T000032": {
+      "bitrate": 0,
+      "blocked": true,
+      "blocked_at": 1794778732,
+      "blocked_reason": "HTTP 404 x2",
+      "dead_fails": 2,
+      "disabled_until": 0,
+      "fail": 2,
+      "height": 0,
+      "last_fail": 1794778732,
+      "last_ok": 0,
+      "last_status": "404",
+      "ok": 0,
+      "quarantines": 0,
+      "streak": 2
     },
     "https://es.matchora.pro/embed/channel/107589": {
       "blocked": false,
@@ -587,20 +701,20 @@
     }
   },
   "stats": {
-    "blocked": 18,
+    "blocked": 19,
     "empty_events": 5,
     "manual_host_blocks": 0,
     "manual_url_blocks": 0,
     "max_sources": 8,
-    "probe_all": true,
-    "probe_failed": 2,
-    "probe_ok": 1297,
-    "probed": 1299,
-    "sources_seen": 1299,
+    "probe_all": false,
+    "probe_failed": 9,
+    "probe_ok": 1061,
+    "probed": 1070,
+    "sources_seen": 1070,
     "trimmed_events": 68,
     "trusted": true,
     "unprobed": 0
   },
-  "updated_at": 1794778622,
+  "updated_at": 1794778755,
   "version": 1
 }
