@@ -334,12 +334,12 @@
   "stats": {
     "empty_events": 6,
     "max_sources": 8,
-    "probe_failed": 33,
-    "probe_ok": 1214,
-    "probed": 1247,
-    "trimmed_events": 78,
+    "probe_failed": 0,
+    "probe_ok": 1156,
+    "probed": 1156,
+    "trimmed_events": 73,
     "trusted": true
   },
-  "updated_at": 1794774585,
+  "updated_at": 1794774721,
   "version": 1
 }

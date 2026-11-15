@@ -231,6 +231,24 @@ STOPWORDS = {
     "24", "7", "watch", "now",
 }
 
+TITLE_ALIASES = {
+    "czech republic": "czech",
+    "czechia": "czech",
+    "türkiye": "turkey",
+    "turkiye": "turkey",
+    "bosnia and herzegovina": "bosnia",
+    "bosnia-herzegovina": "bosnia",
+    "north macedonia": "macedonia",
+    "republic of ireland": "ireland",
+    "cote d'ivoire": "ivory coast",
+    "côte d'ivoire": "ivory coast",
+    "korea republic": "south korea",
+    "korea dpr": "north korea",
+    "trinidad and tobago": "trinidad",
+    "united states": "usa",
+}
+
+
 SPORT_DURATION_SEC = {
     "AMERICAN FOOTBALL": 4 * 3600,
     "NFL": 4 * 3600,
@@ -247,7 +265,11 @@ SPORT_DURATION_SEC = {
 
 
 def match_tokens(text: str) -> list[str]:
-    cleaned = re.sub(r"[^a-z0-9 ]", " ", (text or "").lower())
+    lowered = (text or "").lower()
+    for alias, canonical in TITLE_ALIASES.items():
+        if alias in lowered:
+            lowered = lowered.replace(alias, canonical)
+    cleaned = re.sub(r"[^a-z0-9 ]", " ", lowered)
     out = []
     for part in cleaned.split():
         if len(part) >= 2 and part not in STOPWORDS and part not in out:

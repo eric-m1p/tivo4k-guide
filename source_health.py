@@ -269,6 +269,9 @@ def apply_source_health(
             )
         for url, (ok, detail) in results.items():
             _record(state, url, ok, detail, now, trust_failures=trusted)
+        if not trusted:
+            # Do not demote anything when the runner's probes look blocked.
+            results = {url: value for url, value in results.items() if value[0]}
 
     trimmed = 0
     empty = 0
