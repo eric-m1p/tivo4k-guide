@@ -242,17 +242,18 @@ def ranked_sources(
     return [item[0] for item in out]
 
 
-def _probe_one(url: str) -> tuple[str, bool, str]:
+def _probe_one(url: str, timeout: int = PROBE_TIMEOUT) -> tuple[str, bool, str, int]:
+    started = time.monotonic()
     try:
         import requests  # imported lazily so --no-probe-sources has no dependency
     except Exception as exc:  # pragma: no cover - configuration error
-        return url, False, "requests missing: " + str(exc)[:60]
+        return url, False, "requests missing: " + str(exc)[:60], 0
 
     try:
         with requests.get(
             url,
             headers=PROBE_HEADERS,
-            timeout=(PROBE_TIMEOUT, PROBE_TIMEOUT),
+            timeout=(timeout, timeout),
             stream=True,
             allow_redirects=True,
         ) as response:
@@ -261,25 +262,43 @@ def _probe_one(url: str) -> tuple[str, bool, str]:
                 next(response.iter_content(1024), b"")
             except Exception:
                 pass
-            return url, 200 <= code < 400, str(code)
+            latency_ms = int((time.monotonic() - started) * 1000)
+            return url, 200 <= code < 400, str(code), latency_ms
     except Exception as exc:
-        return url, False, type(exc).__name__
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return url, False, type(exc).__name__, latency_ms
 
 
-def probe_sources(urls: list[str], workers: int = PROBE_WORKERS) -> dict[str, tuple[bool, str]]:
-    results: dict[str, tuple[bool, str]] = {}
+def probe_sources(
+    urls: list[str], workers: int = PROBE_WORKERS, timeout: int = PROBE_TIMEOUT
+) -> dict[str, tuple[bool, str]]:
+    detailed = probe_sources_detailed(urls, workers=workers, timeout=timeout)
+    return {url: (item["ok"], item["status"]) for url, item in detailed.items()}
+
+
+def probe_sources_detailed(
+    urls: list[str], workers: int = PROBE_WORKERS, timeout: int = PROBE_TIMEOUT
+) -> dict[str, dict]:
+    """Probe URLs and return status plus latency; used by the rack/report CLI."""
+    results: dict[str, dict] = {}
     if not urls:
         return results
     workers = max(1, min(workers, 64))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_probe_one, url): url for url in urls}
+        futures = {pool.submit(_probe_one, url, timeout): url for url in urls}
         for future in as_completed(futures):
             url = futures[future]
             try:
-                _, ok, detail = future.result()
+                _, ok, detail, latency_ms = future.result()
             except Exception as exc:
-                ok, detail = False, type(exc).__name__
-            results[url] = (ok, detail)
+                ok, detail, latency_ms = False, type(exc).__name__, 0
+            status = str(detail)
+            results[url] = {
+                "ok": ok,
+                "status": status,
+                "latency_ms": latency_ms,
+                "error": "" if status.isdigit() else status,
+            }
     return results
 
 
