@@ -8,7 +8,21 @@ Guide URL for TiviMate and other players:
 
     https://raw.githubusercontent.com/eric-m1p/tivo4k-guide/main/guide.xml.gz
 
+Live/upcoming sports & 24/7 channels feed for Stream Sites TV:
+
+    https://raw.githubusercontent.com/eric-m1p/tivo4k-guide/main/events.json
+
 ## How it updates
+
+### Live Events Feed (`events.json`)
+
+A GitHub Actions job (`.github/workflows/events.yml`) runs `distill_events.py`
+every 30 minutes directly from GitHub's runners (pulling upstream APIs and
+committing `events.json` without any local machine in the loop).
+
+Run it by hand from the Actions tab ("Refresh Live Events Feed", then "Run workflow").
+
+### TV Guide (`guide.xml.gz`)
 
 A GitHub Actions job (`.github/workflows/guide.yml`) rebuilds the guide every
 day around 2-3 AM Pacific and commits it when it changes. It uses:
