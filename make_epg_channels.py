@@ -13,7 +13,7 @@ from collections import defaultdict
 from xml.sax.saxutils import escape, quoteattr
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-M3U = os.path.join(HERE, "tivo4k.m3u")
+M3U = os.path.join(HERE, "tivo4k_all.m3u") if os.path.exists(os.path.join(HERE, "tivo4k_all.m3u")) else os.path.join(HERE, "tivo4k.m3u")
 GUIDES = os.path.join(HERE, ".cache", "guides.json")
 GRABBER = os.path.join(HERE, "epg-grabber")
 OUT = os.path.join(GRABBER, "tivo4k.channels.xml")

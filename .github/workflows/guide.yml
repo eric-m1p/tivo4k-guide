@@ -2,7 +2,7 @@ name: Rebuild TV guide
 
 # Rebuilds guide.xml.gz from the channel list in tivo4k.m3u (channel lines only,
 # no stream links) using the iptv-org/epg grabbers plus Pluto TV / Samsung TV Plus
-# listings from i.mjh.nz, then commits it if it changed.
+# listings from i.mjh.nz and the supplemental feeds, then commits it if it changed.
 on:
   schedule:
     - cron: "17 10 * * *"   # daily, ~2-3 AM Pacific
@@ -45,18 +45,24 @@ jobs:
           python3 make_epg_channels.py
           cd epg-grabber
           npm run grab --- --channels=tivo4k.channels.xml --output=../guide.xml \
-            --days=2 --maxConnections=10 --timeout=15000 | grep -E 'saving|done|ERR' | sort | uniq -c || true
+            --days=2 --maxConnections=10 --timeout=15000 | awk '/saving|done|ERR/'
 
       - name: Grab listings (fallback sources for empty channels)
         run: |
           rm -f guide.fallback.xml
-          python3 merge_guides.py > /dev/null
+          python3 merge_guides.py --find-empty
           python3 make_epg_channels.py --fallback
+          if ! grep -q '<channel ' epg-grabber/tivo4k.fallback.channels.xml; then
+            exit 0
+          fi
           cd epg-grabber
-          npm run grab --- --channels=tivo4k.fallback.channels.xml --output=../guide.fallback.xml \
-            --days=2 --maxConnections=10 --timeout=15000 | grep -E 'saving|done|ERR' | sort | uniq -c || true
+          if ! npm run grab --- --channels=tivo4k.fallback.channels.xml --output=../guide.fallback.xml \
+            --days=2 --maxConnections=10 --timeout=15000 | awk '/saving|done|ERR/'; then
+            rm -f ../guide.fallback.xml
+            echo "Fallback grab failed. Continuing with the other guide sources."
+          fi
 
-      - name: Merge with Pluto / Samsung listings
+      - name: Merge platform and supplemental listings
         run: python3 merge_guides.py | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Commit guide if it changed

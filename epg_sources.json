@@ -1,0 +1,266 @@
+[
+  {
+    "url": "https://www.open-epg.com/files/australia.xml.gz",
+    "channels": {
+      "ABCTV.au@NSW": [
+        "ABCTVNSW.au"
+      ]
+    }
+  },
+  {
+    "url": "https://epgshare01.online/epgshare01/epg_ripper_US2.xml.gz",
+    "channels": {
+      "AceTV.us@SD": [
+        "ACE.TV.us2"
+      ],
+      "AMGTV.us@SD": [
+        "AMG.TV.us2"
+      ],
+      "AWEPlus.us@SD": [
+        "AWE.Plus.us2"
+      ],
+      "BizTV.us@SD": [
+        "Biz.TV.us2"
+      ],
+      "ComedyTV.us@SD": [
+        "Comedy.TV.HD.us2"
+      ],
+      "FreeSpeechTV.us@SD": [
+        "Free.Speech.TV.us2"
+      ],
+      "FunRoads.us@SD": [
+        "Fun.Roads.us2"
+      ],
+      "GreatEntertainmentTelevision.us@SD": [
+        "Great.Entertainment.Television.us2"
+      ],
+      "INSP.us@SD": [
+        "INSP.HD.us2"
+      ],
+      "MarqueeSportsNetwork.us@SD": [
+        "Marquee.Sports.Network.HD.us2"
+      ],
+      "MBCAmerica.us@SD": [
+        "MBC.America.us2"
+      ],
+      "MeTVToons.us@SD": [
+        "MeTV.Toons.us2"
+      ],
+      "MSNOW.us@SD": [
+        "MS.NOW.HD.us2"
+      ],
+      "PBSKidsPacific.us@SD": [
+        "PBS.Kids.West.Stream.us2"
+      ],
+      "PetsTV.us@SD": [
+        "Pets.TV.HD.us2"
+      ],
+      "PursuitChannel.us@SD": [
+        "Pursuit.Channel.us2"
+      ],
+      "RecipeTV.us@SD": [
+        "Recipe.TV.HD.us2"
+      ],
+      "RightNowTV.us@SD": [
+        "Right.Now.TV.us2"
+      ],
+      "SalemNewsChannel.us@SD": [
+        "Salem.News.Channel.us2"
+      ],
+      "ScaresbyShudder.us@SD": [
+        "Scares.by.Shudder.us2"
+      ],
+      "TCT.us@SD": [
+        "TCT.us2"
+      ],
+      "TheArchive.us@SD": [
+        "The.Archive.us2"
+      ],
+      "Willow.us@SD": [
+        "Willow.Cricket.HD.us2"
+      ],
+      "WorldHarvestTV.us@SD": [
+        "World.Harvest.Television.us2"
+      ],
+      "TheYoungTurks.us@SD": [
+        "TYT.The.Young.Turks.us2"
+      ]
+    }
+  },
+  {
+    "url": "https://raw.githubusercontent.com/BuddyChewChew/xumo-playlist-generator/main/playlists/xumo_epg.xml.gz",
+    "channels": {
+      "AmericanNinjaWarrior.us@SD": [
+        "99951318"
+      ],
+      "BarkTV.us@SD": [
+        "99951409"
+      ],
+      "IONPlus.us@East": [
+        "9999614"
+      ],
+      "NBCLXHome.us@HD": [
+        "99991651"
+      ],
+      "SwerveCombat.us@SD": [
+        "99991696"
+      ]
+    }
+  },
+  {
+    "url": "https://www.open-epg.com/files/unitedstates11.xml.gz",
+    "channels": {
+      "AWE.us@SD": [
+        "A Wealth of Entertainment HD.us"
+      ],
+      "MegaTV.us@WSBSTV": [
+        "Mega TV (WSBS) Key West, FL HD.us"
+      ],
+      "MyDestinationTV.us@SD": [
+        "MyDestination.TV HD.us"
+      ],
+      "SonyMovies.us@SD": [
+        "Sony Movies HD.us"
+      ]
+    }
+  },
+  {
+    "url": "https://i.mjh.nz/SamsungTVPlus/all.xml.gz",
+    "channels": {
+      "bonappetit.us@SD": [
+        "USBC44000226R"
+      ],
+      "EurovisionSport.uk@Europe": [
+        "GB3800003OS"
+      ],
+      "HappyKids.us@SD": [
+        "USBC44000072I"
+      ],
+      "LegoChannel.us@SD": [
+        "CABC230001363"
+      ],
+      "MysteryScienceTheater3000.us@SD": [
+        "US4500004SQ"
+      ],
+      "TraceUK.uk@HD": [
+        "GBBD19000026B"
+      ],
+      "ZenLIFEbyStingray.ca@HD": [
+        "CA600002VE"
+      ]
+    }
+  },
+  {
+    "url": "https://c31-guide-publisher.c31-guide-publisher.workers.dev/guide",
+    "format": "c31",
+    "channels": {
+      "C31Melbourne.au@SD": [
+        "C31 Melbourne TV Guide"
+      ]
+    }
+  },
+  {
+    "url": "https://i.mjh.nz/Plex/all.xml.gz",
+    "channels": {
+      "FEVATV.ca@SD": [
+        "647f8d22a2fc3fadb4721685-6a023b768c3c8db908ecaee4"
+      ],
+      "WSOCNow.us@SD": [
+        "6a1610bebdf296985fd95603-61f9a6aec68d91e31d4cc86e"
+      ]
+    }
+  },
+  {
+    "url": "https://epgshare01.online/epgshare01/epg_ripper_PLEX1.xml.gz",
+    "channels": {
+      "HasbroLegends.us@SD": [
+        "plex.tv.Hasbro.Legends.plex"
+      ],
+      "OnPatrolLive.us@HD": [
+        "plex.tv.On.Patrol:.Live.plex"
+      ],
+      "TheDoctors.us@HD": [
+        "plex.tv.The.Doctors.plex"
+      ]
+    }
+  },
+  {
+    "url": "https://www.open-epg.com/files/unitedstates7.xml.gz",
+    "channels": {
+      "JusticeCentralTV.us@SD": [
+        "Justice Central TV.us"
+      ],
+      "Roar.us@SD": [
+        "Roar.us"
+      ]
+    }
+  },
+  {
+    "url": "https://epgshare01.online/epgshare01/epg_ripper_US_LOCALS1.xml.gz",
+    "channels": {
+      "KIIOLD101.us@HD": [
+        "KIIO-LD.us_locals1"
+      ],
+      "KNOVCD411.us@HD": [
+        "KNOV-CD.us_locals1"
+      ],
+      "KPVMLD251.us@HD": [
+        "KPVM-LD.us_locals1"
+      ],
+      "WATCDT571.us@HD": [
+        "WATC-DT.us_locals1"
+      ],
+      "WVVHCD181.us@HD": [
+        "WVVH-CD.us_locals1"
+      ]
+    }
+  },
+  {
+    "url": "https://epgshare01.online/epgshare01/epg_ripper_CA2.xml.gz",
+    "channels": {
+      "KnowledgeNetwork.ca@SD": [
+        "Knowledge.Network.ca2"
+      ]
+    }
+  },
+  {
+    "url": "https://www.open-epg.com/files/canada.xml.gz",
+    "channels": {
+      "NTVPlus.ca@SD": [
+        "NTVPlus.ca"
+      ]
+    }
+  },
+  {
+    "url": "https://raw.githubusercontent.com/BuddyChewChew/localnow-playlist-generator/main/epg.xml",
+    "channels": {
+      "OutdoorAmerica.us@SD": [
+        "LN_23F40B93-4CDF-46AC-A617-60935E7562CC"
+      ]
+    }
+  },
+  {
+    "url": "https://epgshare01.online/epgshare01/epg_ripper_RALLY_TV1.xml.gz",
+    "channels": {
+      "RallyTV.us@SD": [
+        "Rally.TV.de"
+      ]
+    }
+  },
+  {
+    "url": "https://raw.githubusercontent.com/BuddyChewChew/tubi-scraper/main/tubi_epg.xml",
+    "channels": {
+      "ReelzFamousInfamous.us@HD": [
+        "641290"
+      ]
+    }
+  },
+  {
+    "url": "https://epgshare01.online/epgshare01/epg_ripper_AU1.xml.gz",
+    "channels": {
+      "SkyRacing1.au@SD": [
+        "SkyRacing1.au"
+      ]
+    }
+  }
+]
