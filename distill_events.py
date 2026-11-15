@@ -103,23 +103,24 @@ def parse_scores(raw_scores) -> list[dict]:
                 summary = f"{a_abbr} {away.get('score', 0)} - {h_abbr} {home.get('score', 0)}"
             if clock:
                 summary += f" • {clock}"
-        entries.append(
-            {
-                "league": (obj.get("league") or "").lower(),
-                "start_ms": int(obj.get("start") or 0),
-                "summary": summary,
-                "tokens": tokens,
-            }
-        )
+            entries.append(
+                {
+                    "league": (obj.get("league") or "").lower(),
+                    "start_ms": int(obj.get("start") or 0),
+                    "summary": summary,
+                    "is_final": status.lower() == "post" or "final" in clock.lower(),
+                    "tokens": tokens,
+                }
+            )
     return entries
 
 
-def find_score(name: str, tag: str, starts_at: int, scores: list[dict]) -> str:
+def find_score(name: str, tag: str, starts_at: int, scores: list[dict]) -> tuple[str, bool]:
     if not scores or starts_at <= 0:
-        return ""
+        return "", False
     tokens = match_tokens(name)
     if len(tokens) < 2:
-        return ""
+        return "", False
     start_ms = starts_at * 1000
     low_tag = (tag or "").lower()
     best = None
@@ -134,7 +135,9 @@ def find_score(name: str, tag: str, starts_at: int, scores: list[dict]) -> str:
         if hits >= 2 and diff < best_diff:
             best = sc
             best_diff = diff
-    return best["summary"] if best else ""
+    if best:
+        return best["summary"], bool(best.get("is_final"))
+    return "", False
 
 
 def format_time_label(status: str, starts_at: int, now_sec: int) -> str:
@@ -241,6 +244,38 @@ def _extract_sources(stream_obj: dict, tag: str) -> list[dict]:
     return sources
 
 
+SHOWS_247 = {
+    "family guy",
+    "south park",
+    "spongebob squarepants",
+    "the simpsons",
+    "cows",
+}
+NEWS_247 = {"cnn", "fox news"}
+MOTOR_247 = {"sky sports racing", "rally tv"}
+CHANNEL_RANK = {"Sports Network": 0, "News Network": 1, "24/7 Show": 2}
+
+
+def normalize_always_live(title: str, category: str, league: str) -> tuple[str, str, str]:
+    clean_title = re.sub(r"^24/7\s+", "", (title or "").strip(), flags=re.I).strip()
+    low = clean_title.lower()
+    if low == "spongebob squarepants":
+        clean_title = "SpongeBob SquarePants"
+    cat = (category or "").strip()
+    lg = (league or "").strip()
+    if low in SHOWS_247:
+        return clean_title, "Entertainment", "24/7 Show"
+    if low in NEWS_247:
+        return clean_title, "News", "News Network"
+    if low in MOTOR_247:
+        return clean_title, "Motorsports", "Sports Network"
+    if cat.lower() in ("", "24/7 streams", "24/7 channel", "24/7"):
+        cat = "Sports"
+    if lg.lower() in ("", "24/7 channel", "24/7 streams", "24/7"):
+        lg = "Sports Network"
+    return clean_title, cat, lg
+
+
 def distill_once() -> tuple[list[dict], int]:
     wall_now = int(time.time())
     ppv = fetch_json(PPV_URL)
@@ -266,18 +301,30 @@ def distill_once() -> tuple[list[dict], int]:
             if not name:
                 continue
 
-            always_live = bool(s.get("always_live"))
+            tag = (s.get("tag") or "").strip()
+            category = (s.get("category_name") or cat_name).strip() or cat_name
+            always_live = bool(s.get("always_live")) or (
+                "24/7" in name.lower() or "24/7" in cat_name.lower() or "24/7" in tag.lower()
+            )
             starts_at = int(s.get("starts_at") or 0)
             ends_at = int(s.get("ends_at") or 0)
             status = effective_status(always_live, starts_at, ends_at, now_sec)
             if status == "ended":
                 continue
 
-            tag = (s.get("tag") or "").strip()
-            category = (s.get("category_name") or cat_name).strip() or cat_name
+            score_summary, is_final = (
+                ("", False) if always_live else find_score(name, tag, starts_at, scores)
+            )
+            if not always_live and (is_final or "final" in score_summary.lower()):
+                continue
+
             sources = _extract_sources(s, tag)
             if not sources:
                 continue
+
+            league = tag or category
+            if always_live:
+                name, category, league = normalize_always_live(name, category, league)
 
             key = canonical_key("ppv", name, starts_at, always_live, now_sec)
             starts_iso = (
@@ -289,13 +336,13 @@ def distill_once() -> tuple[list[dict], int]:
                 "canonical_key": key,
                 "title": name,
                 "category": category,
-                "league": tag or category,
+                "league": league,
                 "status": status,
                 "starts_at": starts_at,
                 "ends_at": ends_at,
                 "starts_at_iso": starts_iso,
                 "time_label": format_time_label(status, starts_at, now_sec),
-                "score_summary": find_score(name, tag, starts_at, scores),
+                "score_summary": score_summary,
                 "poster_url": (s.get("poster") or "").strip(),
                 "origins": ["ppv"],
                 "sources": sources,
@@ -320,15 +367,17 @@ def distill_once() -> tuple[list[dict], int]:
             merged[key] = rec
 
     rank = {"live": 0, "future": 1, "always_live": 2}
-    events = sorted(
-        merged.values(),
-        key=lambda e: (
-            rank.get(e["status"], 3),
-            e["starts_at"] if e["status"] == "future" else 0,
-            e["title"].lower(),
-            e["canonical_key"],
-        ),
-    )
+
+    def sort_key(e: dict):
+        st = e["status"]
+        r = rank.get(st, 3)
+        if st == "future":
+            return (r, 0, e["starts_at"], e["title"].lower(), e["canonical_key"])
+        if st == "always_live":
+            return (r, CHANNEL_RANK.get(e["league"], 3), 0, e["title"].lower(), e["canonical_key"])
+        return (r, 0, 0, e["title"].lower(), e["canonical_key"])
+
+    events = sorted(merged.values(), key=sort_key)
     return events, now_sec
 
 
