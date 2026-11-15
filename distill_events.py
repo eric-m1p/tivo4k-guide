@@ -639,7 +639,7 @@ def main() -> int:
             args.source_health,
             max_sources=max(1, args.max_sources),
             probe_budget=max(0, args.probe_budget),
-            do_probe=args.probe_sources,
+            do_probe=args.probe_sources and not args.dry_run,
             workers=max(1, args.probe_workers),
         )
     except Exception as exc:
