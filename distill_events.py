@@ -317,9 +317,37 @@ MOTOR_247 = {"sky sports racing", "rally tv"}
 CHANNEL_RANK = {"Sports Network": 0, "News Network": 1, "24/7 Show": 2}
 
 
+CHANNEL_TITLE_TOKENS = (
+    "nfl network",
+    "nba tv",
+    "nhl network",
+    "mlb network",
+    "golf channel",
+    "tennis channel",
+    "sec network",
+    "acc network",
+    "big ten network",
+    "cbs sports network",
+    "fox cricket",
+    "fox footy",
+    "fox league",
+    "sky sports ",
+    "premier sports",
+)
+
+
+def is_channel_like_title(title: str) -> bool:
+    low = (title or "").strip().lower()
+    if not low or "redzone" in low or "red zone" in low:
+        return False
+    return any(tok in low for tok in CHANNEL_TITLE_TOKENS)
+
+
 def normalize_always_live(title: str, category: str, league: str) -> tuple[str, str, str]:
     clean_title = re.sub(r"^24/7\s+", "", (title or "").strip(), flags=re.I).strip()
     low = clean_title.lower()
+    if "nfl network" in low:
+        return "NFL Network", "Sports", "Sports Network"
     if low == "spongebob squarepants":
         clean_title = "SpongeBob SquarePants"
     cat = (category or "").strip()
@@ -533,7 +561,19 @@ def merge_streamcorner_feed(
         + f" -> {len(sc_events)} provider rows, {len(merged)} merged events",
         flush=True,
     )
-    return [_feed_dict_from_event(event, now_sec) for event in merged], counts
+    out_dicts = []
+    for event in merged:
+        if not any(ch.isalnum() for ch in (event.title or "")):
+            continue
+        if event.status != "always_live" and is_channel_like_title(event.title):
+            event.status = "always_live"
+            event.title, event.category, event.league = normalize_always_live(
+                event.title, event.category, event.league
+            )
+            event.canonical_key = canonical_key("ev", event.title, event.starts_at, True, now_sec)
+            event.time_label = "24/7"
+        out_dicts.append(_feed_dict_from_event(event, now_sec))
+    return out_dicts, counts
 
 
 def save_json(events: list[dict], now_sec: int, json_path: str) -> None:
