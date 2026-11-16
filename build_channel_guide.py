@@ -79,6 +79,141 @@ def episode_of(prog: dict) -> str:
     return m.group(1).strip() if m else ""
 
 
+XMLTV_FEEDS = [
+    "https://epgshare01.online/epgshare01/epg_ripper_US2.xml.gz",
+    "https://epgshare01.online/epgshare01/epg_ripper_UK1.xml.gz",
+    "https://epgshare01.online/epgshare01/epg_ripper_AU1.xml.gz",
+]
+
+# Map normalized always_live network titles -> candidate XMLTV display-name/id substrings
+NETWORK_ALIASES = {
+    "amc": ["amc hd", "amc"],
+    "bbcamerica": ["bbc america hd", "bbc america"],
+    "cnn": ["cnn hd", "cnn"],
+    "foxnews": ["fox news channel hd", "fox news channel", "fox news"],
+    "hbocomedy": ["hbo comedy hd", "hbo comedy"],
+    "hbodrama": ["hbo signature hd", "hbo drama", "hbo2 hd"],
+    "hboeast": ["hbo hd", "hbo east", "hbo"],
+    "hbohits": ["hbo hits", "hbo zone"],
+    "hbolatino": ["hbo latino hd", "hbo latino"],
+    "hbomovies": ["hbo2 hd", "hbo family"],
+    "hbowest": ["hbo (pacific)", "hbo west"],
+    "nbcknbc": ["knbc", "nbc 4", "nbc los angeles"],
+    "nbcsbayarea": ["nbc sports bay area"],
+    "nbcsboston": ["nbc sports boston"],
+    "nbcscalifornia": ["nbc sports california"],
+    "nbcsphiladelphia": ["nbc sports philadelphia"],
+    "nflnetwork": ["nfl network hd", "nfl network"],
+    "nhlnetwork": ["nhl network hd", "nhl network"],
+    "premiersports1uk": ["premier sports 1 hd", "premier sports 1"],
+    "foxcricket": ["fox cricket"],
+    "foxfooty": ["fox footy"],
+    "foxleague": ["fox league"],
+    "skysportsgolf": ["sky sports golf"],
+    "skysportsracing": ["sky sports racing"],
+    "willow": ["willow hd", "willow cricket", "willow"],
+}
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _parse_xmltv_time(raw: str) -> int | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    for fmt in ("%Y%m%d%H%M%S %z", "%Y%m%d%H%M %z", "%Y%m%d%H%M%S"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return int(dt.timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def fetch_network_epg(events_path: Path, now_sec: int) -> dict[str, list]:
+    """Pull XMLTV schedules for always_live networks in events.json."""
+    if not events_path.is_file():
+        return {}
+    try:
+        evs = json.loads(events_path.read_text(encoding="utf-8")).get("events") or []
+    except Exception:
+        return {}
+    wanted_slugs: set[str] = set()
+    for e in evs:
+        if e.get("status") == "always_live" and (e.get("league") or "").lower() != "24/7 show":
+            slug = _norm(e.get("title") or "")
+            if slug:
+                wanted_slugs.add(slug)
+    if not wanted_slugs:
+        return {}
+
+    import gzip
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    win_start = now_sec - 3600
+    win_end = now_sec + 8 * 3600
+    matched: dict[str, list] = {}
+
+    for url in XMLTV_FEEDS:
+        remaining = [s for s in wanted_slugs if f"net:{s}" not in matched]
+        if not remaining:
+            break
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            raw = urllib.request.urlopen(req, timeout=20).read()
+            root = ET.fromstring(gzip.decompress(raw))
+        except Exception as exc:
+            print(f"      xmltv skip {url}: {exc}")
+            continue
+
+        cid_by_slug: dict[str, str] = {}
+        ch_names: dict[str, str] = {}
+        for ch in root.findall("channel"):
+            cid = ch.attrib.get("id", "")
+            names = [dn.text or "" for dn in ch.findall("display-name")]
+            ch_names[cid] = (" ".join(names) + " " + cid).lower()
+
+        for slug in remaining:
+            aliases = NETWORK_ALIASES.get(slug, [slug])
+            for alias in aliases:
+                for cid, hay in ch_names.items():
+                    if alias in hay:
+                        cid_by_slug[cid] = slug
+                        break
+                if slug in cid_by_slug.values():
+                    break
+
+        if not cid_by_slug:
+            continue
+
+        progs_by_cid: dict[str, list] = {}
+        for prog in root.findall("programme"):
+            cid = prog.attrib.get("channel", "")
+            if cid not in cid_by_slug:
+                continue
+            s = _parse_xmltv_time(prog.attrib.get("start", ""))
+            e = _parse_xmltv_time(prog.attrib.get("stop", ""))
+            if s is None or e is None or e <= s or e < win_start or s > win_end:
+                continue
+            t_el = prog.find("title")
+            title = (t_el.text or "").strip() if t_el is not None else ""
+            if not title:
+                continue
+            sub_el = prog.find("sub-title")
+            ep = (sub_el.text or "").strip()[:60] if sub_el is not None else ""
+            progs_by_cid.setdefault(cid, []).append([s, e, title, ep])
+
+        for cid, slug in cid_by_slug.items():
+            rows = sorted(progs_by_cid.get(cid, []), key=lambda r: r[0])
+            if rows:
+                matched[f"net:{slug}"] = rows
+
+    return matched
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     default_out = HERE / "guide-repo" / "channel_guide.json"
@@ -139,6 +274,11 @@ def main() -> int:
             if rows:
                 out[c["id"]] = rows
             time.sleep(0.4 * attempt)
+
+    net_epg = fetch_network_epg(HERE / "events.json", int(time.time()))
+    if net_epg:
+        out.update(net_epg)
+        print(f"      added {len(net_epg)} network EPG schedules from XMLTV")
 
     doc = {"v": 1, "generated": int(time.time()), "ch": out}
     path = Path(ar.out)

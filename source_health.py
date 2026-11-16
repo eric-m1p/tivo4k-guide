@@ -47,6 +47,7 @@ QUARANTINE_HOURS = (6, 12, 24, 72)
 KEEP_DAYS = 30
 FAILURE_TRUST_THRESHOLD = 0.65
 DEFINITIVE_STATUSES = {"404", "410"}
+MANIFEST_DEAD_STATUSES = {"403", "404", "410"}
 PERMANENT_FAIL_TOTAL = 6
 PERMANENT_QUARANTINES = 2
 # Headless-browser quality pass. Static HTML only sees the outer embed page; most
@@ -59,7 +60,7 @@ QUALITY_BROWSER_TIMEOUT = 10
 QUALITY_BROWSER_SETTLE_MS = 700
 
 QUALITY_TOKEN_RE = re.compile(
-    r"(?<![a-z0-9])(4k|uhd|fhd|2160p?|1080p?|720p?|540p|480p|360p|sd)(?![a-z0-9])",
+    r"(?<![a-z0-9])(4k|uhd|fhd|hd|2160p?|1080p?|720p?|540p|480p|360p|sd)(?![a-z0-9])",
     re.I,
 )
 
@@ -263,6 +264,157 @@ def _host_rank(state: dict, url: str) -> tuple:
         -round(rate, 2),
         -height,
     )
+
+
+def _host_probe_stats(detailed: dict[str, dict]) -> dict[str, dict]:
+    """Per-run host pass rate and p50 latency from the liveness probes."""
+    stats: dict[str, dict] = {}
+    for url, info in (detailed or {}).items():
+        host = host_of(url)
+        if not host:
+            continue
+        bucket = stats.setdefault(host, {"ok": 0, "total": 0, "latencies": []})
+        bucket["total"] += 1
+        if info.get("ok"):
+            bucket["ok"] += 1
+            latency = int(info.get("latency_ms") or 0)
+            if latency > 0:
+                bucket["latencies"].append(latency)
+    for bucket in stats.values():
+        latencies = sorted(bucket.pop("latencies"))
+        bucket["p50_ms"] = latencies[len(latencies) // 2] if latencies else 0
+        bucket["rate"] = (bucket["ok"] + 1) / (bucket["total"] + 2)
+    return stats
+
+
+def _host_reliability(state: dict, host: str, run_stats: dict[str, dict]) -> float:
+    run = run_stats.get(host) or {}
+    run_rate = float(run.get("rate", 0.5))
+    telemetry = (state.get("hosts") or {}).get(host)
+    if isinstance(telemetry, dict):
+        ok = int(telemetry.get("ok") or 0)
+        fail = int(telemetry.get("fail") or 0)
+        telemetry_rate = (ok + 1) / (ok + fail + 2)
+        return round(run_rate * 0.7 + telemetry_rate * 0.3, 3)
+    return round(run_rate, 3)
+
+
+def _quality_score(src: dict, height: int) -> int:
+    """0-5 quality score: measured height, with a one-tier penalty for guesses.
+
+    A measured 480p is real but is not automatically better than an unmeasured
+    "HD" label; a measured 720p is. This keeps a known-low stream from jumping
+    ahead of a plausible higher-quality mirror just because it was measured.
+    """
+    if height >= 1080:
+        return 5
+    if height >= 720:
+        return 4
+    if height >= 480:
+        return 2
+    if height > 0:
+        return 1
+    return {0: 4, 1: 3, 2: 1, 3: 0}.get(quality_rank(src), 1)
+
+
+def _selection_key(
+    src: dict,
+    entry: dict,
+    probe_info: dict | None,
+    probe_ok: bool | None,
+    host_stats: dict[str, dict],
+    state: dict,
+    index: int,
+) -> tuple:
+    """Order trusted live sources before guesses, then quality, reliability, speed."""
+    url = str(src.get("url") or "")
+    host = host_of(url)
+    height = int(src.get("height") or 0)
+    bitrate = int(src.get("bitrate") or 0)
+    if probe_info:
+        if height <= 0:
+            height = int(probe_info.get("height") or 0)
+        if bitrate <= 0:
+            bitrate = int(probe_info.get("bitrate") or 0)
+    if height <= 0:
+        height = int(entry.get("height") or 0)
+    if bitrate <= 0:
+        bitrate = int(entry.get("bitrate") or 0)
+    latency = int((probe_info or {}).get("latency_ms") or 0) if probe_ok else 10**9
+    reliability = _host_reliability(state, host, host_stats)
+    streak = int(entry.get("streak") or 0)
+    fail = int(entry.get("fail") or 0)
+    ok_count = int(entry.get("ok") or 0)
+    health_penalty = min(streak, 6) * 12 + min(fail, 12) * 3 - min(ok_count, 30)
+    return (
+        0 if probe_ok is True else (1 if probe_ok is None else 2),
+        -_quality_score(src, height),
+        -min(height, 4320),
+        0 if (src.get("verified") or entry.get("verified")) else 1,
+        -reliability,
+        -min(bitrate, 50_000_000),
+        latency,
+        health_penalty,
+        -min(ok_count, 50),
+        index,
+    )
+
+
+def _select_best_sources(candidates: list[dict], limit: int) -> list[dict]:
+    """Greedy best-N with host diversity, then fill from the same hosts.
+
+    Liveness always wins: every probe-ok source outranks unprobed/failed
+    mirrors. Within that tier, the best source on each host is taken first so
+    one CDN outage cannot take out the whole failover stack; the remaining
+    slots are then filled with the best duplicates.
+    """
+    if not candidates or limit <= 0:
+        return []
+    ordered = sorted(candidates, key=lambda item: item["key"])
+    healthy = [item for item in ordered if item["ok"] is True]
+    unprobed = [item for item in ordered if item["ok"] is None]
+    failed = [item for item in ordered if item["ok"] is False]
+    selected: list[dict] = []
+    selected_urls: set[str] = set()
+    used_hosts: set[str] = set()
+
+    def diverse(pool: list[dict]) -> None:
+        for item in pool:
+            if len(selected) >= limit:
+                return
+            host = item["host"]
+            if host in used_hosts:
+                continue
+            src = item["src"]
+            url = str(src.get("url") or "")
+            if url in selected_urls:
+                continue
+            selected.append(src)
+            selected_urls.add(url)
+            used_hosts.add(host)
+
+    def fill(pool: list[dict]) -> None:
+        for item in pool:
+            if len(selected) >= limit:
+                return
+            src = item["src"]
+            url = str(src.get("url") or "")
+            if url in selected_urls:
+                continue
+            selected.append(src)
+            selected_urls.add(url)
+
+    for pool in (healthy, unprobed, failed):
+        diverse(pool)
+        fill(pool)
+        if len(selected) >= limit:
+            break
+    # Keep the diverse membership but play the best source first: a lower-quality
+    # mirror on a new host is a fallback, not something to try before a better
+    # duplicate on a host that already answered.
+    key_by_url = {str(item["src"].get("url") or ""): item["key"] for item in candidates}
+    selected.sort(key=lambda src: key_by_url.get(str(src.get("url") or ""), ()))
+    return selected[:limit]
 
 
 def ranked_sources(
@@ -562,9 +714,13 @@ def _quality_meta(url: str, text: str, headers: dict, timeout: int,
     height = 0
     bitrate = 0
     manifest = ""
+    manifest_status = ""
     seen = seen if seen is not None else set()
     if url in seen:
-        return {"height": 0, "bitrate": 0, "manifest": "", "verified": False, "quality": ""}
+        return {
+            "height": 0, "bitrate": 0, "manifest": "", "manifest_status": "",
+            "verified": False, "quality": "",
+        }
     seen.add(url)
     lowered = url.lower().split("?")[0]
     if lowered.endswith((".m3u8", ".mpd")):
@@ -613,6 +769,7 @@ def _quality_meta(url: str, text: str, headers: dict, timeout: int,
                                                 "height": int(player["height"]),
                                                 "bitrate": int(player.get("bitrate") or 0),
                                                 "manifest": str(player.get("manifest") or player_url)[:400],
+                                                "manifest_status": "",
                                                 "verified": True,
                                                 "quality": _quality_label(int(player["height"])),
                                             }
@@ -621,8 +778,11 @@ def _quality_meta(url: str, text: str, headers: dict, timeout: int,
                             )
                             if nested.get("height", 0) > 0:
                                 return {**nested, "manifest": nested.get("manifest") or iframe_url}
-                            if nested.get("manifest") and not manifest:
-                                manifest = nested["manifest"]
+                            if nested.get("manifest"):
+                                if not manifest:
+                                    manifest = nested["manifest"]
+                                if nested.get("manifest_status") and not manifest_status:
+                                    manifest_status = nested["manifest_status"]
                 except Exception:
                     pass
         player = _player_config_quality(text, url, headers, timeout)
@@ -662,6 +822,7 @@ def _quality_meta(url: str, text: str, headers: dict, timeout: int,
                     stream=True,
                     allow_redirects=True,
                 ) as response:
+                    manifest_status = str(response.status_code)
                     if 200 <= response.status_code < 400:
                         body = _read_limited(response, MANIFEST_LIMIT).decode("utf-8", "replace")
                         parsed_height, parsed_bitrate = _quality_from_manifest(body)
@@ -673,6 +834,7 @@ def _quality_meta(url: str, text: str, headers: dict, timeout: int,
         "height": height,
         "bitrate": bitrate,
         "manifest": manifest[:400],
+        "manifest_status": manifest_status,
         "verified": height > 0,
         "quality": _quality_label(height),
     }
@@ -689,6 +851,59 @@ def _quality_label(height: int) -> str:
         return "480p"
     if height > 0:
         return "SD"
+    return ""
+
+
+_PLACEHOLDER_HOSTS = ("aurasportsplayer.cfd", "embedme.cfd", "embedsports.me")
+
+
+def _detect_placeholder_embed(url: str, text: str, timeout: int) -> str:
+    """Follow nested embed iframes (aurasportsplayer -> embedme -> embedsports) for placeholders."""
+    low_url = url.lower()
+    if not any(h in low_url for h in _PLACEHOLDER_HOSTS):
+        return ""
+    import requests
+
+    cur_url = url
+    cur_text = text
+    for _ in range(2):
+        low = cur_text.lower()
+        if "data-pldm=" in low or ".m3u8" in low or ".mpd" in low:
+            return ""
+        if (
+            'id="headlinetext">starting soon' in low
+            or "no streams found" in low
+            or "stream offline" in low
+        ):
+            return "starting_soon"
+        m = re.search(
+            r'<iframe[^>]+src=["\'](https://[^"\']+)["\']',
+            cur_text,
+            re.I,
+        )
+        if not m:
+            break
+        nxt = m.group(1).strip()
+        if not any(h in nxt.lower() for h in _PLACEHOLDER_HOSTS):
+            break
+        try:
+            headers = dict(PROBE_HEADERS)
+            headers["Referer"] = cur_url
+            resp = requests.get(nxt, headers=headers, timeout=(timeout, timeout), allow_redirects=True)
+            if resp.status_code >= 400:
+                return ""
+            cur_url = nxt
+            cur_text = resp.text[:PROBE_BODY_LIMIT]
+        except Exception:
+            return ""
+    low = cur_text.lower()
+    if "data-pldm=" not in low and ".m3u8" not in low and ".mpd" not in low:
+        if (
+            'id="headlinetext">starting soon' in low
+            or "no streams found" in low
+            or "stream offline" in low
+        ):
+            return "starting_soon"
     return ""
 
 
@@ -713,8 +928,17 @@ def _probe_one(url: str, timeout: int = PROBE_TIMEOUT) -> tuple[str, bool, str, 
             text = body.decode("utf-8", "replace")
             meta = _quality_meta(url, text, PROBE_HEADERS, timeout)
             meta["content_type"] = ctype[:80]
+            if url.lower().split("?")[0].endswith((".m3u8", ".mpd")):
+                meta.setdefault("manifest_status", str(code))
             latency_ms = int((time.monotonic() - started) * 1000)
-            return url, 200 <= code < 400, str(code), latency_ms, meta
+            ok = 200 <= code < 400
+            status_label = str(code)
+            if ok:
+                placeholder = _detect_placeholder_embed(url, text, timeout)
+                if placeholder:
+                    ok = False
+                    status_label = placeholder
+            return url, ok, status_label, latency_ms, meta
     except Exception as exc:
         latency_ms = int((time.monotonic() - started) * 1000)
         return url, False, type(exc).__name__, latency_ms, {}
@@ -752,11 +976,35 @@ def probe_sources_detailed(
                 "height": int(meta.get("height") or 0),
                 "bitrate": int(meta.get("bitrate") or 0),
                 "manifest": str(meta.get("manifest") or ""),
+                "manifest_status": str(meta.get("manifest_status") or ""),
                 "verified": bool(meta.get("verified")),
                 "quality": str(meta.get("quality") or ""),
                 "content_type": str(meta.get("content_type") or ""),
             }
     return results
+
+
+def apply_manifest_failures(results: dict[str, dict], trusted: bool = True) -> int:
+    """Turn a dead manifest (403/404/410) into a probe failure.
+
+    The outer embed page often stays 200 while the tokenized m3u8 it points at
+    has expired. Without this, a source measured earlier keeps its height and
+    clears its fail streak forever even though playback gets a 403.
+    """
+    if not trusted:
+        return 0
+    changed = 0
+    for info in results.values():
+        if not info.get("ok"):
+            continue
+        if int(info.get("height") or 0) > 0:
+            continue
+        status = str(info.get("manifest_status") or "")
+        if status in MANIFEST_DEAD_STATUSES:
+            info["ok"] = False
+            info["status"] = f"manifest-{status}"
+            changed += 1
+    return changed
 
 
 def _looks_like_manifest(url: str) -> bool:
@@ -990,10 +1238,17 @@ def _record(state: dict, url: str, ok: bool, detail: str, now: int,
     entry = _entry(state, url)
     status = str(detail)[:24]
     entry["last_status"] = status
+    if status.startswith("manifest-"):
+        # The stream URL itself is gone/forbidden; drop the stale quality so it
+        # stops ranking on a measurement that no longer plays.
+        entry["height"] = 0
+        entry["bitrate"] = 0
+        entry["verified"] = False
     entry["fail"] = min(int(entry.get("fail") or 0) + 1, 9999)
     entry["streak"] = min(int(entry.get("streak") or 0) + 1, 99)
     entry["last_fail"] = now
-    if status in DEFINITIVE_STATUSES:
+    manifest_code = status.split("-", 1)[1] if status.startswith("manifest-") else ""
+    if status in DEFINITIVE_STATUSES or manifest_code in DEFINITIVE_STATUSES:
         entry["dead_fails"] = min(int(entry.get("dead_fails") or 0) + 1, 99)
     if int(entry.get("dead_fails") or 0) >= 2:
         entry["blocked"] = True
@@ -1066,11 +1321,17 @@ def ingest_telemetry_from_git(
             if not host:
                 continue
             bucket = hosts.setdefault(host, {"ok": 0, "fail": 0, "height": 0, "stream_kbps": 0, "last_seen": ""})
-            if rtype == "source_result":
+            if rtype in ("source_result", "source_scan"):
                 if row.get("ok"):
                     bucket["ok"] = int(bucket.get("ok") or 0) + 1
                 else:
                     bucket["fail"] = int(bucket.get("fail") or 0) + 1
+                h = int(row.get("height") or 0)
+                kbps = int(row.get("bitrate_kbps") or row.get("stream_kbps") or 0)
+                if h > 0:
+                    bucket["height"] = max(int(bucket.get("height") or 0), h)
+                if kbps > 0:
+                    bucket["stream_kbps"] = max(int(bucket.get("stream_kbps") or 0), kbps)
                 processed += 1
             elif rtype in ("first_frame", "source_quality"):
                 h = int(row.get("height") or 0)
@@ -1116,11 +1377,15 @@ def apply_source_health(
     raw_unique: set[str] = set()
     blocked_in_feed: set[str] = set()
     quarantined_in_feed: set[str] = set()
+    non_future_urls: set[str] = set()
     for event in events:
+        ev_status = str(event.get("status") or "")
         for src in event.get("sources") or []:
             url = str(src.get("url") or "").strip()
             if not url.startswith("https://"):
                 continue
+            if ev_status != "future":
+                non_future_urls.add(url)
             raw_unique.add(url)
             entry = entries.get(url, {})
             if is_manually_blocked(url, blocklist) or is_blocked(entry):
@@ -1148,6 +1413,8 @@ def apply_source_health(
         "quality_browser_measured": 0,
         "quality_manifests": 0,
     }
+    host_stats: dict[str, dict] = {}
+    manifest_failures = 0
     if do_probe and unique:
         detailed = probe_sources_detailed(unique, workers=workers)
         results = {url: (info["ok"], info["status"]) for url, info in detailed.items()}
@@ -1196,7 +1463,13 @@ def apply_source_health(
                         info["bitrate"] = int(quality.get("bitrate") or 0)
                         info["verified"] = True
                         info["quality"] = str(quality.get("quality") or "")
+        manifest_failures = apply_manifest_failures(detailed, trusted=trusted)
+        if manifest_failures:
+            results = {url: (info["ok"], info["status"]) for url, info in detailed.items()}
         for url, info in detailed.items():
+            if not info["ok"] and info.get("status") == "starting_soon" and url not in non_future_urls:
+                # Upcoming games legitimately show "Starting Soon" before kickoff.
+                continue
             _record(
                 state, url, bool(info["ok"]), str(info["status"]), now,
                 trust_failures=trusted,
@@ -1207,9 +1480,12 @@ def apply_source_health(
         if not trusted:
             # Do not demote anything when the runner's probes look blocked.
             results = {url: value for url, value in results.items() if value[0]}
+        host_stats = _host_probe_stats(detailed)
 
     trimmed = 0
     empty = 0
+    selected_sources = 0
+    multi_host_events = 0
     for index, event in enumerate(events):
         limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max_sources
         source_list = event.get("sources") or []
@@ -1228,30 +1504,36 @@ def apply_source_health(
                 src["bitrate"] = int(entry.get("bitrate") or 0)
                 src["verified"] = True
         ranked = ranked_sources(source_list, state, now, blocklist=blocklist)
-        selected = []
-        for src in ranked:
+        candidates = []
+        for index, src in enumerate(ranked):
             url = str(src.get("url") or "").strip()
             entry = entries.get(url, {})
             if is_disabled(entry, now):
                 continue
             probe = results.get(url)
-            if probe is not None and not probe[0]:
-                # A failed probe is a demotion. Keep it only as a last-resort
-                # mirror when there is nothing healthier and it has not been
-                # repeatedly failing.
-                if int(entry.get("streak") or 0) >= 2 or int(entry.get("fail") or 0) >= 3:
-                    continue
-                selected.append((False, src))
+            probe_ok = probe[0] if probe is not None else None
+            if probe_ok is False and (
+                int(entry.get("streak") or 0) >= 2 or int(entry.get("fail") or 0) >= 3
+            ):
+                # Repeatedly failing mirrors are not worth a fallback slot.
                 continue
-            selected.append((True, src))
-
-        # Healthy/probe-ok first, then quality/health rank (already sorted).
-        selected.sort(key=lambda item: (0 if item[0] else 1,))
-        final = [src for _, src in selected[:limit]]
+            candidates.append({
+                "src": src,
+                "host": host_of(url),
+                "ok": probe_ok,
+                "key": _selection_key(
+                    src, entry, detailed.get(url), probe_ok, host_stats, state, index
+                ),
+            })
+        final = _select_best_sources(candidates, limit)
         if len(final) != len(source_list):
             trimmed += 1
         if not final:
             empty += 1
+        else:
+            selected_sources += len(final)
+            if len({host_of(str(src.get("url") or "")) for src in final}) > 1:
+                multi_host_events += 1
         event["sources"] = final
 
     stats = {
@@ -1267,8 +1549,11 @@ def apply_source_health(
         "quality_manifests": sum(
             1 for info in detailed.values() if str(info.get("manifest") or "")
         ),
+        "manifest_failed": manifest_failures,
         "trimmed_events": trimmed,
         "empty_events": empty,
+        "selected_sources": selected_sources,
+        "multi_host_events": multi_host_events,
         "max_sources": max_sources,
         "sources_raw": len(raw_unique),
         "sources_seen": len(all_unique),
@@ -1291,8 +1576,9 @@ def apply_source_health(
           f"unprobed={stats['unprobed']} "
           f"quality={stats['quality_measured']} measured "
           f"browser={stats['quality_browser_measured']}/{stats['quality_probed']} "
-          f"manifests={stats['quality_manifests']} "
-          f"trimmed={trimmed} empty={empty} cap={max_sources} "
+          f"manifests={stats['quality_manifests']} manifest_dead={stats['manifest_failed']} "
+          f"trimmed={trimmed} empty={empty} selected={selected_sources} "
+          f"multi_host={multi_host_events} cap={max_sources} "
           f"blocked_state={stats['blocked']} manual={stats['manual_url_blocks']}u/{stats['manual_host_blocks']}h",
         flush=True,
     )
