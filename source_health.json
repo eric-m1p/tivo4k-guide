@@ -1,31 +1,73 @@
 {
   "hosts": {
-    "amazon.com.getsugatensho.sbs": {
-      "fail": 5,
+    "104game.click": {
+      "fail": 1,
       "height": 0,
-      "last_seen": "2026-11-15T22:28:10Z",
+      "last_seen": "2026-11-16T00:29:26Z",
+      "ok": 0,
+      "stream_kbps": 0
+    },
+    "amazon.com.getsugatensho.sbs": {
+      "fail": 20,
+      "height": 0,
+      "last_seen": "2026-11-16T02:56:07Z",
       "ok": 0,
       "stream_kbps": 0
     },
     "amazon.com.pandecocogaming.sbs": {
-      "fail": 4,
+      "fail": 11,
+      "height": 720,
+      "last_seen": "2026-11-16T02:26:35Z",
+      "ok": 3,
+      "stream_kbps": 0
+    },
+    "cdnlivetv.tv": {
+      "fail": 0,
+      "height": 1080,
+      "last_seen": "2026-11-16T00:32:01Z",
+      "ok": 1,
+      "stream_kbps": 0
+    },
+    "embedindia.st": {
+      "fail": 1,
       "height": 0,
-      "last_seen": "2026-11-15T22:28:17Z",
+      "last_seen": "2026-11-16T02:39:47Z",
       "ok": 0,
       "stream_kbps": 0
     },
     "embedme.st": {
-      "fail": 0,
+      "fail": 2,
       "height": 720,
-      "last_seen": "2026-11-15T22:03:37Z",
-      "ok": 1,
+      "last_seen": "2026-11-16T02:54:58Z",
+      "ok": 9,
+      "stream_kbps": 3989
+    },
+    "flyembed.sbs": {
+      "fail": 2,
+      "height": 0,
+      "last_seen": "2026-11-16T02:39:40Z",
+      "ok": 0,
       "stream_kbps": 0
     },
     "play.aurasportsplayer.cfd": {
-      "fail": 1,
+      "fail": 11,
       "height": 0,
-      "last_seen": "2026-11-15T22:02:43Z",
-      "ok": 0,
+      "last_seen": "2026-11-16T02:56:00Z",
+      "ok": 5,
+      "stream_kbps": 0
+    },
+    "streamec.st": {
+      "fail": 4,
+      "height": 0,
+      "last_seen": "2026-11-16T02:03:15Z",
+      "ok": 4,
+      "stream_kbps": 0
+    },
+    "streamxhd.sbs": {
+      "fail": 0,
+      "height": 576,
+      "last_seen": "2026-11-16T02:04:02Z",
+      "ok": 2,
       "stream_kbps": 0
     },
     "strmfree.st": {
@@ -36,21 +78,21 @@
       "stream_kbps": 0
     },
     "taifood-blog.asia": {
-      "fail": 4,
+      "fail": 10,
       "height": 1080,
-      "last_seen": "2026-11-16T00:28:33Z",
-      "ok": 7,
-      "stream_kbps": 0
+      "last_seen": "2026-11-16T02:55:40Z",
+      "ok": 40,
+      "stream_kbps": 9400
     },
     "watch.sling.com": {
       "fail": 0,
       "height": 1080,
-      "last_seen": "2026-11-15T22:27:43Z",
-      "ok": 17,
-      "stream_kbps": 2347
+      "last_seen": "2026-11-16T03:26:21Z",
+      "ok": 28,
+      "stream_kbps": 3267
     }
   },
-  "last_telemetry_ts": "2026-11-16T00:28:33Z",
+  "last_telemetry_ts": "2026-11-16T03:26:21Z",
   "sources": {
     "https://104game.click/player/2/185": {
       "bitrate": 0,
@@ -654,28 +696,32 @@
       "streak": 3
     },
     "https://es.matchora.pro/embed/channel/119011": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://es.matchora.pro/embed/channel/1221178": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://es.matchora.pro/embed/channel/1432187": {
       "blocked": false,
@@ -714,16 +760,18 @@
       "streak": 3
     },
     "https://es.matchora.pro/embed/channel/1867489": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://es.matchora.pro/embed/channel/1917309": {
       "blocked": false,
@@ -738,16 +786,18 @@
       "streak": 3
     },
     "https://es.matchora.pro/embed/channel/1918182": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://es.matchora.pro/embed/channel/1918186": {
       "blocked": false,
@@ -774,16 +824,18 @@
       "streak": 3
     },
     "https://es.matchora.pro/embed/channel/2038845": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://es.matchora.pro/embed/channel/2078955": {
       "blocked": false,
@@ -798,16 +850,18 @@
       "streak": 3
     },
     "https://es.matchora.pro/embed/channel/2078956": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://es.matchora.pro/embed/channel/2133548": {
       "blocked": false,
@@ -826,26 +880,28 @@
       "blocked": false,
       "dead_fails": 0,
       "disabled_until": 0,
-      "fail": 1,
+      "fail": 2,
       "height": 0,
-      "last_fail": 1794788947,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
       "quarantines": 0,
-      "streak": 1
+      "streak": 2
     },
     "https://es.matchora.pro/embed/channel/317036": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://es.matchora.pro/embed/channel/317037": {
       "blocked": false,
@@ -872,16 +928,18 @@
       "streak": 3
     },
     "https://es.matchora.pro/embed/match/2505856": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://es.matchora.pro/embed/match/2505860": {
       "blocked": false,
@@ -908,16 +966,18 @@
       "streak": 3
     },
     "https://es.matchora.pro/embed/match/2615657": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://play.aurasportsplayer.cfd/event/espn-401911017": {
       "bitrate": 0,
@@ -1010,52 +1070,60 @@
       "verified": true
     },
     "https://sportsembed.su.getsugatensho.sbs/?p=szo2thdymgqzhet5knmfc2dhscehxifjlo7khhfirn2gozkmlbjwrje2nnkznhn6lnufxsn5xznwgvuiqf6jpdumrrtvcz2llz4lveenu5ovkxndp5je6tfktggvuukpk2jwq6natsfyw2elrwp3q2c4kbqzuv2tlfvfuv2tocpwtknar5vl5ktzkjogoxezpf4xs734owe322f6v6wwqt4onjlwktlcsvgvatkmm5lfjjlwvgoz4zdkvcoi473bkgtvgxcurshjwuclkz7f2vk5jnfu6ue4xsgzoyvctwtvbkmmu6pfw3u7tvhvatsqjoo3yw24lzh2niclvggfuts3ogofat5atrhffhf6sclvxkcoucq2ddnht5p4dicolwma": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://sportsembed.su.getsugatensho.sbs/?p=szo2thdymgqzhetljzhvk2lisbhx42k3yksjzkmpr2v2th4hojwytdtylzrja7t5ucof2z25r2hy24c5mr4fwxsmrsqjwuk4kf5y4vlknkt2jenaxbtwkysplrujs2slkwjwo4esrzuzzju4vcohivc4mglfuu3crn6eyvsrocuy62v6zc6mdos2rki2u4markm2mtemortididkt2rzzknjub32mysmkzhfozmrvbhe6td7ucgwtkelt5owplldlrlgddvcrsui2v43s27kave5ucqe6tsoxwjgbfkstnkknj4nkzhv5q2nt5jfgvm4knjg6xdaskpu4ve4kzq2ituqynjfiusojooj4tlnmkfy3ie7lkgf2": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://sportsembed.su.getsugatensho.sbs/?p=szo2thdymgqzhetlmrle4ytfk5oh4w4rrzuvxl4sur4uxh5ksb5hu24htv4e62luugvi3knetrowplkljnfuws2lq5suwtmssow2hd4prohfk2tko5su2yutlfhfcwknngju27m7ncu2beuongohmxlelzlwmu2srrtvmxfij2vktd5avghwvpsypv6xq5lyvkmxo4mhsoix42whusi2a2u6unwgqzlckskfsw2mlrnfjjv2vcoi5d5arvu2q63cuguzevktmvtzxh4slnxj5h2ujvkfdiktnwgzfc5husp2cwelu5iv5pcqubgvdiksj5j4ldmrsbh2iwnausjkqt4nyfhezinatrf2aun4rwgy2ukquwqkddfbsjna": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://sportsembed.su.getsugatensho.sbs/?p=szo2thdymgqzheudk5me6yswmgoyddtjlov2hjfhu52gcuu5sogg43dxnsmyazluu6oj7ifhror2i3e4uonwcydkkfmwu7c3jn3v2vk5uohy7c4oywt2m2kxmjjzss3hkzhu263irogz62fjucjh5kdamrhvov2vmbrflfthochwvpvkvgh2bkl7u6biu33spv3w5c4oofyv22cprzvmpjeruc5fwz26kznfgwuslrufmtltust2pfdenkujy7sslrfzmv3ikkmktf2zmkci4xkvlwqewuu4yfrf2xsmusuzxj26vcujk4kntrke4te4kjh35eerrzjkhivau6kvgtuqocpfctnaucqkaun4rwmixhksu5jkiyngkjpgytcpkfozq": {
+      "bitrate": 0,
       "blocked": false,
       "dead_fails": 0,
-      "disabled_until": 1794796164,
-      "fail": 3,
-      "last_fail": 1794774564,
+      "disabled_until": 1794855698,
+      "fail": 4,
+      "height": 0,
+      "last_fail": 1794812498,
       "last_ok": 0,
       "last_status": "ConnectionError",
       "ok": 0,
-      "quarantines": 1,
-      "streak": 3
+      "quarantines": 2,
+      "streak": 4
     },
     "https://streamec.st/embed/ch69.php": {
       "bitrate": 0,
@@ -1337,26 +1405,29 @@
   },
   "stats": {
     "blocked": 32,
-    "empty_events": 0,
+    "empty_events": 1,
+    "manifest_failed": 0,
     "manual_host_blocks": 0,
     "manual_url_blocks": 0,
     "max_sources": 8,
+    "multi_host_events": 38,
     "probe_all": true,
-    "probe_failed": 22,
-    "probe_ok": 887,
-    "probed": 909,
-    "quality_browser_measured": 5,
-    "quality_manifests": 82,
-    "quality_measured": 12,
+    "probe_failed": 14,
+    "probe_ok": 881,
+    "probed": 895,
+    "quality_browser_measured": 0,
+    "quality_manifests": 0,
+    "quality_measured": 0,
     "quality_probed": 120,
+    "selected_sources": 918,
     "sources_blocked": 0,
-    "sources_quarantined": 13,
-    "sources_raw": 922,
-    "sources_seen": 909,
-    "trimmed_events": 49,
+    "sources_quarantined": 0,
+    "sources_raw": 895,
+    "sources_seen": 895,
+    "trimmed_events": 33,
     "trusted": true,
     "unprobed": 0
   },
-  "updated_at": 1794789240,
+  "updated_at": 1794812638,
   "version": 1
 }
