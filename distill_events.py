@@ -448,7 +448,7 @@ def _event_from_feed_dict(record: dict, now_sec: int):
     return sc.Event(
         canonical_key=record["canonical_key"],
         title=record.get("title", ""),
-        category=record.get("category", "Sports"),
+        category=sc.pretty_category(record.get("category", "Sports")),
         league=record.get("league", ""),
         status=record.get("status", "live"),
         starts_at=int(record.get("starts_at") or 0),
@@ -545,7 +545,7 @@ def save_json(events: list[dict], now_sec: int, json_path: str) -> None:
     }
     tmp_path = f"{json_path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(payload, f, separators=(",", ":"))
         f.write("\n")
     os.replace(tmp_path, json_path)
 
@@ -603,6 +603,14 @@ def main() -> int:
     parser.add_argument("--probe-budget", type=int, default=3000, help="max unique URLs probed per run")
     parser.add_argument("--probe-workers", type=int, default=32)
     parser.add_argument(
+        "--quality-budget",
+        type=int,
+        default=120,
+        help="max live URLs measured with a headless browser per run (0 = off)",
+    )
+    parser.add_argument("--quality-workers", type=int, default=4)
+    parser.add_argument("--quality-timeout", type=int, default=10)
+    parser.add_argument(
         "--probe-all",
         action="store_true",
         help="probe every unique source, not just the top candidates per event",
@@ -644,6 +652,16 @@ def main() -> int:
 
     try:
         import source_health
+        if args.probe_sources and not args.dry_run:
+            try:
+                tstats = source_health.ingest_telemetry_from_git(args.source_health, base_dir)
+                if tstats.get("rows", 0) > 0:
+                    print(
+                        f"[health] telemetry: +{tstats['rows']} rows across {tstats['hosts']} hosts",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(f"Warning: telemetry ingest skipped ({exc})", file=sys.stderr)
         source_health.apply_source_health(
             events,
             args.source_health,
@@ -653,6 +671,9 @@ def main() -> int:
             workers=max(1, args.probe_workers),
             blocklist_path=args.source_blocklist,
             probe_all=args.probe_all,
+            quality_budget=max(0, args.quality_budget),
+            quality_workers=max(1, args.quality_workers),
+            quality_timeout=max(2, args.quality_timeout),
         )
     except Exception as exc:
         print(f"Warning: source health pass failed ({exc}); publishing untrimmed sources", file=sys.stderr)

@@ -29,15 +29,28 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('.github/workflows/events.yml') }}
+
       - name: Install Playwright + Chromium
         run: |
           pip install -q requests playwright
-          python -m playwright install --with-deps chromium
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            python -m playwright install chromium
+          fi
+          python -m playwright install-deps chromium
+
+      - name: Fetch device telemetry branch (optional)
+        run: git fetch origin telemetry:refs/remotes/origin/telemetry || true
 
       - name: Distill events feed (PPV + all StreamCorner providers)
         run: |
           python3 distill_events.py --streamcorner --probe-sources --probe-all \
             --probe-workers 64 --probe-budget 6000 \
+            --quality-budget 120 --quality-workers 4 --quality-timeout 10 \
             --max-sources 8 --json events.json \
             | tee -a "$GITHUB_STEP_SUMMARY"
 

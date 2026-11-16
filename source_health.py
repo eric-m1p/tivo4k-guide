@@ -20,6 +20,8 @@ results are not applied, so a bad network path cannot gut the feed.
 
 from __future__ import annotations
 
+import base64
+import html
 import json
 import os
 import re
@@ -27,6 +29,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode, urljoin
 
 DEFAULT_STATE = "source_health.json"
 DEFAULT_BLOCKLIST = "source_blocklist.json"
@@ -46,6 +49,24 @@ FAILURE_TRUST_THRESHOLD = 0.65
 DEFINITIVE_STATUSES = {"404", "410"}
 PERMANENT_FAIL_TOTAL = 6
 PERMANENT_QUARANTINES = 2
+# Headless-browser quality pass. Static HTML only sees the outer embed page; most
+# players build their manifest at runtime, so a real browser is the only reliable
+# way to measure height/bitrate from CI. The budget keeps a full feed run inside
+# the workflow's time limit; URLs already measured are remembered in state.
+QUALITY_BROWSER_BUDGET = 120
+QUALITY_BROWSER_WORKERS = 4
+QUALITY_BROWSER_TIMEOUT = 10
+QUALITY_BROWSER_SETTLE_MS = 700
+
+QUALITY_TOKEN_RE = re.compile(
+    r"(?<![a-z0-9])(4k|uhd|fhd|2160p?|1080p?|720p?|540p|480p|360p|sd)(?![a-z0-9])",
+    re.I,
+)
+
+
+def _quality_tokens(text: str) -> set[str]:
+    return {m.group(1).lower() for m in QUALITY_TOKEN_RE.finditer(text or "")}
+
 
 PROBE_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -72,18 +93,14 @@ def quality_rank(source: dict) -> int:
         return 3
     label = str(source.get("label") or "").lower()
     url = str(source.get("url") or "").lower()
-    if (
-        "_540p" in url or "_480p" in url or "_360p" in url
-        or "540p" in label or "480p" in label or "360p" in label
-        or label.startswith("sd") or " sd" in label or "sd |" in label
-    ):
+    label_tokens = _quality_tokens(label)
+    url_tokens = _quality_tokens(url)
+    tokens = label_tokens | url_tokens
+    if tokens & {"540p", "480p", "360p"} or "sd" in label_tokens:
         return 3
-    if any(k in label or k in url for k in ("4k", "uhd", "2160p", "1080p", "fhd")):
+    if tokens & {"4k", "uhd", "fhd", "2160p", "1080p"}:
         return 0
-    if (
-        label.startswith("hd") or " hd" in label or "hd |" in label
-        or "primary hd" in label or "720p" in label or "720p" in url
-    ):
+    if tokens & {"720p"} or "hd" in label_tokens:
         return 1
     return 2
 
@@ -152,17 +169,23 @@ def save_state(path: str | os.PathLike, state: dict, stats: dict) -> None:
         if entry.get("blocked"):
             continue
         last = max(int(entry.get("last_ok") or 0), int(entry.get("last_fail") or 0))
-        if (int(entry.get("height") or 0) > 0):
-            continue
-        if (int(entry.get("fail") or 0) <= 0 and int(entry.get("disabled_until") or 0) <= now):
+        if last < cutoff and int(entry.get("disabled_until") or 0) <= now:
             entries.pop(url, None)
-        elif last < cutoff and int(entry.get("disabled_until") or 0) <= now:
+        elif (int(entry.get("height") or 0) <= 0
+              and int(entry.get("fail") or 0) <= 0
+              and int(entry.get("disabled_until") or 0) <= now):
             entries.pop(url, None)
     # Hard cap keeps the committed JSON small even after months of churn.
     if len(entries) > 8000:
         ranked = sorted(
             entries.items(),
-            key=lambda kv: (int(kv[1].get("disabled_until") or 0), int(kv[1].get("last_fail") or 0)),
+            key=lambda kv: (
+                1 if kv[1].get("blocked") else 0,
+                int(kv[1].get("disabled_until") or 0),
+                1 if int(kv[1].get("height") or 0) > 0 else 0,
+                int(kv[1].get("last_ok") or 0),
+                int(kv[1].get("last_fail") or 0),
+            ),
             reverse=True,
         )
         state["sources"] = dict(ranked[:8000])
@@ -225,6 +248,23 @@ def _health_rank(entry: dict) -> tuple:
     )
 
 
+def _host_rank(state: dict, url: str) -> tuple:
+    hosts = state.get("hosts") or {}
+    info = hosts.get(host_of(url))
+    if not isinstance(info, dict):
+        return (0, 0.0, 0)
+    ok = int(info.get("ok") or 0)
+    fail = int(info.get("fail") or 0)
+    total = ok + fail
+    rate = (ok / total) if total >= 3 else 0.5
+    height = int(info.get("height") or 0)
+    return (
+        -(1 if height >= 1080 else 0),
+        -round(rate, 2),
+        -height,
+    )
+
+
 def ranked_sources(
     sources: list[dict],
     state: dict,
@@ -255,7 +295,10 @@ def ranked_sources(
         out.append((src, index, entry))
     out.sort(key=lambda item: (
         quality_rank(item[0]),
+        0 if item[0].get("verified") else 1,
+        -int(item[0].get("bitrate") or 0),
         _health_rank(item[2]),
+        _host_rank(state, str(item[0].get("url") or "")),
         item[1],
     ))
     return [item[0] for item in out]
@@ -277,10 +320,224 @@ def _read_limited(response, limit: int) -> bytes:
     return b"".join(chunks)[:limit]
 
 
+def _b64_decode(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+    value = value.replace("-", "+").replace("_", "/")
+    value += "=" * (-len(value) % 4)
+    try:
+        return base64.b64decode(value).decode("utf-8", "replace").replace("\\/", "/")
+    except Exception:
+        return ""
+
+
+def _decode_js_concat(text: str) -> str:
+    """Decode `var u = f(a)+f(b)+...` pages (cdnlivetv and friends).
+
+    Each fragment is a base64 literal assigned to a variable; the player joins
+    the decoded pieces in expression order. Only the expression that references
+    at least two variables is considered, which avoids ad/config strings.
+    """
+    variables = dict(re.findall(r"var\s+(\w+)\s*=\s*'([^']*)'", text))
+    if not variables:
+        return ""
+    for match in re.finditer(
+        r"var\s+\w+\s*=\s*((?:\w+\(\w+\)\s*(?:\+\s*)?){2,});", text
+    ):
+        pieces = []
+        for _, name in re.findall(r"(\w+)\((\w+)\)", match.group(1)):
+            decoded = _b64_decode(variables.get(name, ""))
+            if decoded:
+                pieces.append(decoded)
+        candidate = "".join(pieces)
+        if ".m3u8" in candidate or ".mpd" in candidate:
+            return candidate
+    return ""
+
+
+def _decode_char_arrays(text: str) -> str:
+    """Decode `String.fromCharCode(parseInt(atob(v))-k)` pages (streamxhd).
+
+    The page stores shuffled `[index, base64]` pairs and subtracts the sum of
+    two constant functions from the digits left after decoding. Rebuild the
+    string and let the normal manifest regex find the URL.
+    """
+    kexpr = re.search(r"var\s+k\s*=\s*(\w+)\(\)\+(\w+)\(\)", text)
+    if not kexpr:
+        return ""
+    total = 0
+    for name in kexpr.groups():
+        const = re.search(r"function\s+" + re.escape(name) + r"\(\)\{return\s+(\d+)", text)
+        if const:
+            total += int(const.group(1))
+    if total <= 0:
+        return ""
+    for array in re.findall(r"=\[\[(.*?)\];", text, re.S):
+        pairs = re.findall(r'\[(\d+),"([^"]+)"\]', array)
+        if len(pairs) < 8:
+            continue
+        chars = []
+        for _, encoded in sorted(pairs, key=lambda item: int(item[0])):
+            digits = "".join(ch for ch in _b64_decode(encoded) if ch.isdigit())
+            if not digits:
+                continue
+            code = int(digits) - total
+            if 32 <= code < 127:
+                chars.append(chr(code))
+        candidate = "".join(chars)
+        if ".m3u8" in candidate or ".mpd" in candidate:
+            return candidate
+    return ""
+
+
 def _manifest_from_text(text: str) -> str:
     text = text.replace("\\/", "/")
     match = re.search(r'https?://[^\s"\'<>]+?\.(?:m3u8|mpd)(?:\?[^\s"\'<>]*)?', text, re.I)
-    return match.group(0) if match else ""
+    if match:
+        return match.group(0)
+    for b64 in re.findall(r'atob\(\s*["\']([A-Za-z0-9+/=_-]{16,})["\']\s*\)', text):
+        decoded = _b64_decode(b64)
+        m = re.search(r'https?://[^\s"\'<>]+?\.(?:m3u8|mpd)(?:\?[^\s"\'<>]*)?', decoded, re.I)
+        if m:
+            return m.group(0)
+    for decoded in (_decode_js_concat(text), _decode_char_arrays(text)):
+        m = re.search(r'https?://[^\s"\'<>]+?\.(?:m3u8|mpd)(?:\?[^\s"\'<>]*)?', decoded, re.I)
+        if m:
+            return m.group(0)
+    return ""
+
+
+def _iframe_urls(text: str, base_url: str) -> list[str]:
+    out = []
+    for m in re.finditer(r'<iframe[^>]+src=["\']([^"\']+)["\']', text, re.I):
+        candidate = m.group(1).strip()
+        if candidate.startswith("//"):
+            candidate = "https:" + candidate
+        elif candidate.startswith("/"):
+            candidate = urljoin(base_url, candidate)
+        if candidate.startswith("https://") and candidate not in out:
+            out.append(candidate)
+    return out
+
+
+def _site_player_url(text: str) -> str:
+    """Build the posamari/JW player URL used by the embedsports -> frame chain."""
+    config_match = re.search(r"const\s+siteConfig\s*=\s*(\{.*?\});", text, re.S)
+    attributes = re.search(
+        r'data-pldm="([^"]+)".*?data-pid="([^"]+)".*?data-play="([^"]+)"'
+        r'.*?data-player="([^"]+)".*?data-gc="([^"]+)"',
+        text,
+        re.S,
+    )
+    if not config_match or not attributes:
+        return ""
+    try:
+        config = json.loads(config_match.group(1))
+    except Exception:
+        return ""
+    host, pid, play, player, category = attributes.groups()
+    if "/" in host or " " in host:
+        return ""
+    params = {
+        "pid": pid,
+        "v": play,
+        "player": player,
+        "csrf": str(config.get("csrf") or ""),
+        "csrf_ip": str(config.get("csrf_ip") or ""),
+        "expires": str(config.get("sec_expires") or ""),
+        "sec_hash": str(config.get("sec_hash") or ""),
+    }
+    return f"https://{host}/sd0embed/{quote(category, safe='')}?{urlencode(params)}"
+
+
+def _json_object_at(text: str, start: int) -> str:
+    index = text.find("{", start)
+    if index < 0:
+        return ""
+    depth = 0
+    in_string = False
+    escaped = False
+    for position in range(index, len(text)):
+        char = text[position]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[index:position + 1]
+    return ""
+
+
+def _player_config_quality(text: str, url: str, headers: dict, timeout: int) -> dict:
+    """Read quality hints from static player configs (posamari/JW, matchora)."""
+    result: dict = {}
+    blobs = []
+    for match in re.finditer(
+        r'window\.SecKeyPlayerConfig\[["\'][^"\']+["\']\]\s*=', text
+    ):
+        blob = _json_object_at(text, match.end())
+        if blob:
+            blobs.append(blob)
+    if not blobs:
+        for match in re.finditer(r"window\.SecKeyPlayerConfig\s*=\s*", text):
+            blob = _json_object_at(text, match.end())
+            if blob:
+                blobs.append(blob)
+    for blob in blobs:
+        try:
+            config = json.loads(blob)
+        except Exception:
+            continue
+        for player in (
+            config.values() if any(isinstance(value, dict) for value in config.values())
+            else [config]
+        ):
+            if not isinstance(player, dict):
+                continue
+            stream_type = str(player.get("stream_type") or "").upper()
+            is_sd = int(player.get("is_sd") or 0)
+            height = 0
+            if "2160" in stream_type or "4K" in stream_type or "UHD" in stream_type:
+                height = 2160
+            elif "1080" in stream_type or "FHD" in stream_type:
+                height = 1080
+            elif "720" in stream_type or "HD" in stream_type:
+                height = 720
+            elif "480" in stream_type or "SD" in stream_type or is_sd:
+                height = 480
+            source = str(player.get("urlSource") or "")
+            if height:
+                result["height"] = max(int(result.get("height") or 0), height)
+            if source:
+                result["manifest"] = source[:400]
+                if source.lower().endswith((".m3u8", ".mpd")):
+                    try:
+                        import requests
+                        with requests.get(
+                            source, headers={**headers, "Referer": url},
+                            timeout=(timeout, timeout), stream=True,
+                            allow_redirects=True,
+                        ) as response:
+                            if 200 <= response.status_code < 400:
+                                body = _read_limited(response, MANIFEST_LIMIT).decode("utf-8", "replace")
+                                h, b = _quality_from_manifest(body)
+                                if h > 0:
+                                    result["height"] = h
+                                    result["bitrate"] = b
+                    except Exception:
+                        pass
+    return result
 
 
 def _quality_from_manifest(text: str) -> tuple[int, int]:
@@ -300,30 +557,116 @@ def _quality_from_manifest(text: str) -> tuple[int, int]:
     return height, bitrate
 
 
-def _quality_meta(url: str, text: str, headers: dict, timeout: int) -> dict:
+def _quality_meta(url: str, text: str, headers: dict, timeout: int,
+                  depth: int = 0, seen: set[str] | None = None) -> dict:
     height = 0
     bitrate = 0
     manifest = ""
+    seen = seen if seen is not None else set()
+    if url in seen:
+        return {"height": 0, "bitrate": 0, "manifest": "", "verified": False, "quality": ""}
+    seen.add(url)
     lowered = url.lower().split("?")[0]
     if lowered.endswith((".m3u8", ".mpd")):
         manifest = url
         height, bitrate = _quality_from_manifest(text)
     else:
         found = _manifest_from_text(text)
+        manifest_referer = url
+        if not found and depth < 3:
+            for iframe_url in _iframe_urls(text, url)[:4]:
+                if iframe_url in seen:
+                    continue
+                try:
+                    import requests
+                    with requests.get(
+                        iframe_url,
+                        headers={**headers, "Referer": url},
+                        timeout=(timeout, timeout),
+                        stream=True,
+                        allow_redirects=True,
+                    ) as iframe_resp:
+                        if 200 <= iframe_resp.status_code < 400:
+                            iframe_text = _read_limited(iframe_resp, PROBE_BODY_LIMIT).decode("utf-8", "replace")
+                            found = _manifest_from_text(iframe_text)
+                            if found:
+                                manifest_referer = iframe_url
+                                break
+                            player_url = _site_player_url(iframe_text)
+                            if player_url:
+                                with requests.get(
+                                    player_url,
+                                    headers={**headers, "Referer": iframe_url},
+                                    timeout=(timeout, timeout),
+                                    stream=True,
+                                    allow_redirects=True,
+                                ) as player_resp:
+                                    if 200 <= player_resp.status_code < 400:
+                                        player_text = _read_limited(
+                                            player_resp, PROBE_BODY_LIMIT
+                                        ).decode("utf-8", "replace")
+                                        player = _player_config_quality(
+                                            player_text, player_url, headers, timeout
+                                        )
+                                        if player.get("height", 0) > 0:
+                                            return {
+                                                "height": int(player["height"]),
+                                                "bitrate": int(player.get("bitrate") or 0),
+                                                "manifest": str(player.get("manifest") or player_url)[:400],
+                                                "verified": True,
+                                                "quality": _quality_label(int(player["height"])),
+                                            }
+                            nested = _quality_meta(
+                                iframe_url, iframe_text, headers, timeout, depth + 1, seen
+                            )
+                            if nested.get("height", 0) > 0:
+                                return {**nested, "manifest": nested.get("manifest") or iframe_url}
+                            if nested.get("manifest") and not manifest:
+                                manifest = nested["manifest"]
+                except Exception:
+                    pass
+        player = _player_config_quality(text, url, headers, timeout)
+        if player.get("height", 0) <= 0:
+            player_url = _site_player_url(text)
+            if player_url:
+                try:
+                    import requests
+                    with requests.get(
+                        player_url,
+                        headers={**headers, "Referer": url},
+                        timeout=(timeout, timeout),
+                        stream=True,
+                        allow_redirects=True,
+                    ) as player_resp:
+                        if 200 <= player_resp.status_code < 400:
+                            player_text = _read_limited(
+                                player_resp, PROBE_BODY_LIMIT
+                            ).decode("utf-8", "replace")
+                            player = _player_config_quality(
+                                player_text, player_url, headers, timeout
+                            )
+                except Exception:
+                    pass
+        if player.get("height", 0) > 0:
+            height = int(player["height"])
+            bitrate = max(bitrate, int(player.get("bitrate") or 0))
+            manifest = manifest or str(player.get("manifest") or "")
         if found:
-            manifest = found
+            manifest = manifest or found
             try:
                 import requests
                 with requests.get(
                     found,
-                    headers={**headers, "Referer": url},
+                    headers={**headers, "Referer": manifest_referer},
                     timeout=(timeout, timeout),
                     stream=True,
                     allow_redirects=True,
                 ) as response:
                     if 200 <= response.status_code < 400:
                         body = _read_limited(response, MANIFEST_LIMIT).decode("utf-8", "replace")
-                        height, bitrate = _quality_from_manifest(body)
+                        parsed_height, parsed_bitrate = _quality_from_manifest(body)
+                        if parsed_height > 0:
+                            height, bitrate = parsed_height, parsed_bitrate
             except Exception:
                 pass
     return {
@@ -416,6 +759,202 @@ def probe_sources_detailed(
     return results
 
 
+def _looks_like_manifest(url: str) -> bool:
+    lowered = url.lower()
+    return ".m3u8" in lowered or ".mpd" in lowered or "manifest.ts" in lowered
+
+
+def _browser_launch(playwright):
+    """Launch a real browser. Use installed Chrome first, then Playwright's build."""
+    for options in ({"channel": "chrome"}, {}):
+        try:
+            return playwright.chromium.launch(headless=True, **options)
+        except Exception:
+            continue
+    return None
+
+
+def _browser_fetch(ctx, url: str, referer: str, timeout: int) -> str:
+    try:
+        response = ctx.request.get(
+            url,
+            headers={"Referer": referer, "User-Agent": PROBE_HEADERS["User-Agent"]},
+            timeout=timeout * 1000,
+        )
+        if response.ok:
+            return response.text()[:MANIFEST_LIMIT]
+    except Exception:
+        pass
+    try:
+        import requests
+        with requests.get(
+            url, headers={**PROBE_HEADERS, "Referer": referer},
+            timeout=(timeout, timeout), stream=True, allow_redirects=True,
+        ) as response:
+            if 200 <= response.status_code < 400:
+                return _read_limited(response, MANIFEST_LIMIT).decode("utf-8", "replace")
+    except Exception:
+        pass
+    return ""
+
+
+def _height_from_stream_type(player: dict) -> int:
+    stream_type = str(player.get("stream_type") or "").upper()
+    is_sd = int(player.get("is_sd") or 0)
+    if "2160" in stream_type or "4K" in stream_type or "UHD" in stream_type:
+        return 2160
+    if "1080" in stream_type or "FHD" in stream_type:
+        return 1080
+    if "720" in stream_type or "HD" in stream_type:
+        return 720
+    if "480" in stream_type or "SD" in stream_type or is_sd:
+        return 480
+    return 0
+
+
+def _browser_probe_one(ctx, url: str, timeout: int) -> dict:
+    """Load an embed inside an iframe (so anti-embed checks pass) and measure quality."""
+    page = ctx.new_page()
+    manifests: list[str] = []
+    page.on(
+        "request",
+        lambda request: manifests.append(request.url)
+        if _looks_like_manifest(request.url) else None,
+    )
+    height = 0
+    bitrate = 0
+    manifest = ""
+    try:
+        page.set_content(
+            '<html><body style="margin:0;background:#000">'
+            f'<iframe src="{html.escape(url)}" style="width:1280px;height:720px;border:0" '
+            'allow="autoplay; fullscreen; picture-in-picture"></iframe></body></html>'
+        )
+        deadline = time.monotonic() + max(2, timeout)
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(QUALITY_BROWSER_SETTLE_MS)
+            for frame in page.frames:
+                if frame is page.main_frame:
+                    continue
+                try:
+                    config = frame.evaluate("() => window.SecKeyPlayerConfig || null")
+                except Exception:
+                    config = None
+                if isinstance(config, dict):
+                    for player in config.values():
+                        if not isinstance(player, dict):
+                            continue
+                        candidate = _height_from_stream_type(player)
+                        if candidate:
+                            height = max(height, candidate)
+                        source = str(player.get("urlSource") or "")
+                        if source and _looks_like_manifest(source) and not manifest:
+                            manifest = source[:400]
+                try:
+                    dimensions = frame.evaluate(
+                        "() => { const v = document.querySelector('video');"
+                        " return v && v.videoWidth ? [v.videoWidth, v.videoHeight] : null; }"
+                    )
+                except Exception:
+                    dimensions = None
+                if isinstance(dimensions, list) and len(dimensions) == 2:
+                    height = max(height, int(dimensions[1] or 0))
+            if manifests or height:
+                page.wait_for_timeout(400)
+                break
+    except Exception:
+        pass
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+
+    for candidate in manifests:
+        body = _browser_fetch(ctx, candidate, url, timeout)
+        if not body:
+            continue
+        h, b = _quality_from_manifest(body)
+        if h > 0:
+            height, bitrate, manifest = h, b, candidate
+            break
+        if not manifest:
+            manifest = candidate[:400]
+    return {
+        "height": height,
+        "bitrate": bitrate,
+        "manifest": manifest[:400],
+        "verified": height > 0,
+        "quality": _quality_label(height),
+    }
+
+
+def _browser_worker(chunk: list[str], timeout: int) -> dict[str, dict]:
+    results: dict[str, dict] = {}
+    if not chunk:
+        return results
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return results
+    try:
+        with sync_playwright() as playwright:
+            browser = _browser_launch(playwright)
+            if browser is None:
+                return results
+            try:
+                for url in chunk:
+                    ctx = browser.new_context(
+                        user_agent=PROBE_HEADERS["User-Agent"],
+                        viewport={"width": 1280, "height": 720},
+                        locale="en-US",
+                    )
+                    try:
+                        results[url] = _browser_probe_one(ctx, url, timeout)
+                    finally:
+                        ctx.close()
+            finally:
+                browser.close()
+    except Exception:
+        pass
+    return results
+
+
+def probe_quality_browser(
+    urls: list[str],
+    *,
+    budget: int = QUALITY_BROWSER_BUDGET,
+    workers: int = QUALITY_BROWSER_WORKERS,
+    timeout: int = QUALITY_BROWSER_TIMEOUT,
+) -> dict[str, dict]:
+    """Measure real stream height/bitrate with a headless browser.
+
+    Static HTTP probes only see the outer embed page; providers build their
+    playlist in JavaScript. Each URL is loaded inside an iframe so the site's
+    anti-embed checks pass, then m3u8/mpd requests, the player config and the
+    video element are inspected. Returns one entry per probed URL; a `height`
+    of 0 means "no hint found", not that the source is dead.
+    """
+    selected = [str(url).strip() for url in urls if str(url or "").startswith("https://")]
+    if budget > 0:
+        selected = selected[:budget]
+    if not selected:
+        return {}
+    workers = max(1, min(int(workers or 1), 8))
+    workers = min(workers, len(selected))
+    chunk_size = max(1, (len(selected) + workers - 1) // workers)
+    chunks = [selected[i:i + chunk_size] for i in range(0, len(selected), chunk_size)]
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+        futures = [pool.submit(_browser_worker, chunk, timeout) for chunk in chunks]
+        for future in as_completed(futures):
+            try:
+                results.update(future.result())
+            except Exception:
+                pass
+    return results
+
+
 def _record(state: dict, url: str, ok: bool, detail: str, now: int,
             trust_failures: bool, height: int = 0, bitrate: int = 0,
             manifest: str = "") -> None:
@@ -473,6 +1012,83 @@ def _record(state: dict, url: str, ok: bool, detail: str, now: int,
         entry["disabled_until"] = 0
 
 
+def ingest_telemetry_from_git(
+    state_path: str | os.PathLike = DEFAULT_STATE,
+    repo_dir: str | os.PathLike = ".",
+    ref: str = "origin/telemetry",
+) -> dict:
+    """Fold on-device playback telemetry (host success rate + resolution) into state."""
+    import subprocess
+
+    try:
+        names = subprocess.check_output(
+            ["git", "-C", str(repo_dir), "ls-tree", "-r", "--name-only", ref, "--", "telemetry"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).splitlines()
+    except Exception:
+        return {"rows": 0, "hosts": 0}
+
+    state = load_state(state_path)
+    last_ts = str(state.get("last_telemetry_ts") or "")
+    max_ts = last_ts
+    hosts = state.setdefault("hosts", {})
+    processed = 0
+
+    for name in names:
+        if not name.endswith(".jsonl"):
+            continue
+        try:
+            text = subprocess.check_output(
+                ["git", "-C", str(repo_dir), "show", f"{ref}:{name}"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            ts = str(row.get("ts") or "")
+            if ts and last_ts and ts <= last_ts:
+                continue
+            if ts > max_ts:
+                max_ts = ts
+            rtype = row.get("type")
+            host = str(row.get("source_host") or row.get("host") or "").strip().lower()
+            if not host:
+                continue
+            bucket = hosts.setdefault(host, {"ok": 0, "fail": 0, "height": 0, "stream_kbps": 0, "last_seen": ""})
+            if rtype == "source_result":
+                if row.get("ok"):
+                    bucket["ok"] = int(bucket.get("ok") or 0) + 1
+                else:
+                    bucket["fail"] = int(bucket.get("fail") or 0) + 1
+                processed += 1
+            elif rtype in ("first_frame", "source_quality"):
+                h = int(row.get("height") or 0)
+                kbps = int(row.get("stream_kbps") or 0)
+                if h > 0:
+                    bucket["height"] = max(int(bucket.get("height") or 0), h)
+                if kbps > 0:
+                    bucket["stream_kbps"] = max(int(bucket.get("stream_kbps") or 0), kbps)
+                processed += 1
+            if ts:
+                bucket["last_seen"] = ts
+
+    if processed > 0:
+        state["last_telemetry_ts"] = max_ts
+        save_state(state_path, state, state.get("stats") or {})
+    return {"rows": processed, "hosts": len(hosts)}
+
+
 def apply_source_health(
     events: list[dict],
     state_path: str | os.PathLike = DEFAULT_STATE,
@@ -483,6 +1099,9 @@ def apply_source_health(
     workers: int = PROBE_WORKERS,
     blocklist_path: str | os.PathLike | None = None,
     probe_all: bool = False,
+    quality_budget: int = QUALITY_BROWSER_BUDGET,
+    quality_workers: int = QUALITY_BROWSER_WORKERS,
+    quality_timeout: int = QUALITY_BROWSER_TIMEOUT,
 ) -> dict:
     """Probe, rank and trim sources on feed-shaped event dictionaries."""
     now = _now()
@@ -524,6 +1143,11 @@ def apply_source_health(
     results: dict[str, tuple[bool, str]] = {}
     trusted = True
     detailed: dict[str, dict] = {}
+    quality_stats = {
+        "quality_probed": 0,
+        "quality_browser_measured": 0,
+        "quality_manifests": 0,
+    }
     if do_probe and unique:
         detailed = probe_sources_detailed(unique, workers=workers)
         results = {url: (info["ok"], info["status"]) for url, info in detailed.items()}
@@ -537,6 +1161,41 @@ def apply_source_health(
                 "ignoring failures this run (runner network looks blocked)",
                 flush=True,
             )
+        # Static HTML only sees the outer embed. Measure the live URLs that still
+        # have no height with a real browser (bounded, and only unmeasured URLs).
+        if quality_budget > 0:
+            browser_urls = [
+                url for url in unique
+                if detailed.get(url, {}).get("ok")
+                and int(detailed.get(url, {}).get("height") or 0) <= 0
+                and int(entries.get(url, {}).get("height") or 0) <= 0
+            ]
+            if browser_urls:
+                if len(browser_urls) > quality_budget:
+                    # Rotate the window so successive runs eventually measure the
+                    # whole catalogue instead of re-probing the same first batch.
+                    offset = now % len(browser_urls)
+                    browser_urls = browser_urls[offset:] + browser_urls[:offset]
+                measured = probe_quality_browser(
+                    browser_urls,
+                    budget=quality_budget,
+                    workers=quality_workers,
+                    timeout=quality_timeout,
+                )
+                quality_stats["quality_probed"] = len(measured)
+                for url, quality in measured.items():
+                    info = detailed.get(url)
+                    if info is None:
+                        continue
+                    if quality.get("manifest"):
+                        quality_stats["quality_manifests"] += 1
+                        info["manifest"] = str(quality["manifest"])
+                    if int(quality.get("height") or 0) > 0:
+                        quality_stats["quality_browser_measured"] += 1
+                        info["height"] = int(quality["height"])
+                        info["bitrate"] = int(quality.get("bitrate") or 0)
+                        info["verified"] = True
+                        info["quality"] = str(quality.get("quality") or "")
         for url, info in detailed.items():
             _record(
                 state, url, bool(info["ok"]), str(info["status"]), now,
@@ -600,6 +1259,14 @@ def apply_source_health(
         "probe_ok": sum(1 for ok, _ in results.values() if ok),
         "probe_failed": sum(1 for ok, _ in results.values() if not ok),
         "trusted": trusted,
+        "quality_probed": quality_stats["quality_probed"],
+        "quality_measured": sum(
+            1 for info in detailed.values() if int(info.get("height") or 0) > 0
+        ),
+        "quality_browser_measured": quality_stats["quality_browser_measured"],
+        "quality_manifests": sum(
+            1 for info in detailed.values() if str(info.get("manifest") or "")
+        ),
         "trimmed_events": trimmed,
         "empty_events": empty,
         "max_sources": max_sources,
@@ -622,6 +1289,9 @@ def apply_source_health(
         + f"raw={stats['sources_raw']} seen={stats['sources_seen']} "
           f"blocked={stats['sources_blocked']} quarantined={stats['sources_quarantined']} "
           f"unprobed={stats['unprobed']} "
+          f"quality={stats['quality_measured']} measured "
+          f"browser={stats['quality_browser_measured']}/{stats['quality_probed']} "
+          f"manifests={stats['quality_manifests']} "
           f"trimmed={trimmed} empty={empty} cap={max_sources} "
           f"blocked_state={stats['blocked']} manual={stats['manual_url_blocks']}u/{stats['manual_host_blocks']}h",
         flush=True,

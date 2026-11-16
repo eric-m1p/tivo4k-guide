@@ -359,11 +359,29 @@ def normalize_title(title: str) -> str:
     return fixes.get(title.lower(), title)
 
 
+CATEGORY_ALIASES = {
+    "uefa nations": "Soccer",
+    "fifa": "Soccer",
+    "iihf world": "Ice Hockey",
+    "hockey": "Ice Hockey",
+    "croatia": "Volleyball",
+    "poland": "Volleyball",
+    "women": "Soccer",
+    "sports essentials": "Sports",
+    "others": "Other",
+    "fighting": "Fighting",
+    "mma": "Fighting",
+    "boxing": "Fighting",
+    "ufc": "Fighting",
+}
+
+
 def pretty_category(category: str) -> str:
     text = (category or "").strip()
     if not text:
         return "Sports"
-    return " ".join(part.capitalize() for part in text.replace("_", " ").split())
+    cleaned = " ".join(part.capitalize() for part in text.replace("_", " ").split())
+    return CATEGORY_ALIASES.get(cleaned.lower(), cleaned)
 
 
 def normalize_always_live(title: str, category: str, league: str) -> tuple[str, str, str]:
@@ -516,19 +534,24 @@ async def fetch_provider(client: WorkerClient, provider: str, detail_limit: int 
 
     if detail_limit:
         pairs = pairs[:detail_limit]
-    for event, item in pairs:
+    sem = asyncio.Semaphore(8)
+
+    async def _fetch_detail(event: Event, item: dict) -> None:
         ident = item_id(provider, item)
         if not ident:
-            continue
-        try:
-            detail = await client.provider_detail(provider, ident)
-        except Exception:
-            continue
+            return
+        async with sem:
+            try:
+                detail = await client.provider_detail(provider, ident)
+            except Exception:
+                return
         sources = stream_sources(detail, provider)
         if sources:
             event.sources = sources
             if detail.get("poster"):
                 event.poster_url = str(detail["poster"]).strip() or event.poster_url
+
+    await asyncio.gather(*[_fetch_detail(event, item) for event, item in pairs])
     return [event for event, _ in pairs]
 
 

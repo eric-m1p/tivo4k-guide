@@ -113,6 +113,12 @@ def main() -> int:
     ap.add_argument("--budget", type=int, default=2500, help="max unique URLs probed")
     ap.add_argument("--workers", type=int, default=32)
     ap.add_argument("--timeout", type=int, default=8)
+    ap.add_argument(
+        "--quality-budget", type=int, default=sh.QUALITY_BROWSER_BUDGET,
+        help="max live URLs measured with a headless browser (0 = off)",
+    )
+    ap.add_argument("--quality-workers", type=int, default=sh.QUALITY_BROWSER_WORKERS)
+    ap.add_argument("--quality-timeout", type=int, default=sh.QUALITY_BROWSER_TIMEOUT)
     ap.add_argument("--health", default="source_health.json", help="probe history file")
     ap.add_argument("--blocklist", default="source_blocklist.json", help="manual URL/host denies")
     ap.add_argument("--show-bad", action="store_true", help="include failed mirrors in the stack")
@@ -176,6 +182,40 @@ def main() -> int:
     print(f"probing {len(unique)} sources across {len(selected)} events ...", flush=True)
     results = sh.probe_sources_detailed(unique, workers=args.workers, timeout=args.timeout)
 
+    quality_probed = 0
+    quality_manifests = 0
+    if args.quality_budget > 0:
+        browser_urls = [
+            url for url in unique
+            if results.get(url, {}).get("ok")
+            and int(results.get(url, {}).get("height") or 0) <= 0
+        ]
+        if browser_urls:
+            print(
+                f"measuring quality with a headless browser for {min(len(browser_urls), args.quality_budget)} "
+                f"of {len(browser_urls)} unmeasured live sources ...",
+                flush=True,
+            )
+            measured = sh.probe_quality_browser(
+                browser_urls,
+                budget=args.quality_budget,
+                workers=args.quality_workers,
+                timeout=args.quality_timeout,
+            )
+            quality_probed = len(measured)
+            for url, quality in measured.items():
+                info = results.get(url)
+                if info is None:
+                    continue
+                if quality.get("manifest"):
+                    quality_manifests += 1
+                    info["manifest"] = str(quality["manifest"])
+                if int(quality.get("height") or 0) > 0:
+                    info["height"] = int(quality["height"])
+                    info["bitrate"] = int(quality.get("bitrate") or 0)
+                    info["verified"] = True
+                    info["quality"] = str(quality.get("quality") or "")
+
     if args.write_health:
         for url, result in results.items():
             sh._record(
@@ -189,6 +229,13 @@ def main() -> int:
             "probed": len(results),
             "probe_ok": sum(1 for r in results.values() if r["ok"]),
             "probe_failed": sum(1 for r in results.values() if not r["ok"]),
+            "quality_probed": quality_probed,
+            "quality_measured": sum(
+                1 for r in results.values() if int(r.get("height") or 0) > 0
+            ),
+            "quality_manifests": sum(
+                1 for r in results.values() if str(r.get("manifest") or "")
+            ),
             "trusted": True,
             "manual_report": True,
         })
@@ -266,12 +313,20 @@ def main() -> int:
         "blocked_urls": sum(1 for entry in entries.values() if entry.get("blocked")),
         "manual_urls": len(blocklist.get("urls", set())),
         "manual_hosts": len(blocklist.get("hosts", set())),
+        "quality_probed": quality_probed,
+        "quality_measured": sum(
+            1 for result in results.values() if int(result.get("height") or 0) > 0
+        ),
+        "quality_manifests": sum(
+            1 for result in results.values() if str(result.get("manifest") or "")
+        ),
     }
 
     print(
         f"events={summary['events']} sources={summary['sources_examined']} "
         f"probed={summary['probed']} ok={summary['ok']} failed={summary['failed']} "
-        f"pass={summary['pass_rate']:.0%}"
+        f"pass={summary['pass_rate']:.0%} quality={summary['quality_measured']} measured "
+        f"({summary['quality_probed']} browser probes, {summary['quality_manifests']} manifests)"
     )
     print()
     for report in event_reports[: max(0, args.show)]:
