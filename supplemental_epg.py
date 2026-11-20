@@ -156,12 +156,18 @@ def add_remote_sources(root, sources, channels, covered, now):
     """Fetch each configured feed once. Earlier sources take precedence."""
     pending = []
     for source in sources:
-        mappings = {channel: ids for channel, ids in source["channels"].items() if channel in channels and channel not in covered}
+        overrides = set(source.get("override_channels", []))
+        force_all = bool(source.get("override"))
+        mappings = {
+            channel: ids
+            for channel, ids in source["channels"].items()
+            if channel in channels and (force_all or channel in overrides or channel not in covered)
+        }
         if mappings:
-            pending.append((source, mappings))
+            pending.append((source, mappings, force_all, overrides))
 
     def load(item):
-        source, mappings = item
+        source, mappings, _, _ = item
         wanted = {source_id for ids in mappings.values() for source_id in ids}
         try:
             return fetch_programmes(source, wanted, now)
@@ -170,8 +176,12 @@ def add_remote_sources(root, sources, channels, covered, now):
             return {}
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        for (source, mappings), programmes in zip(pending, pool.map(load, pending)):
-            remaining = {channel: ids for channel, ids in mappings.items() if channel not in covered}
+        for (source, mappings, force_all, overrides), programmes in zip(pending, pool.map(load, pending)):
+            remaining = {
+                channel: ids
+                for channel, ids in mappings.items()
+                if force_all or channel in overrides or channel not in covered
+            }
             schedules = choose_schedules(programmes, remaining, now)
             fill_gaps(root, schedules, channels, covered)
             print(f"{source['url']}: filled {len(schedules)}/{len(remaining)} channel gaps")

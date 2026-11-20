@@ -10,14 +10,14 @@
   {
     "url": "https://epgshare01.online/epgshare01/epg_ripper_US2.xml.gz",
     "channels": {
-      "AceTV.us@SD": [
-        "ACE.TV.us2"
-      ],
       "AMGTV.us@SD": [
         "AMG.TV.us2"
       ],
       "AWEPlus.us@SD": [
         "AWE.Plus.us2"
+      ],
+      "AceTV.us@SD": [
+        "ACE.TV.us2"
       ],
       "BizTV.us@SD": [
         "Biz.TV.us2"
@@ -25,11 +25,20 @@
       "ComedyTV.us@SD": [
         "Comedy.TV.HD.us2"
       ],
+      "Create.us@WMPT": [
+        "Create.us2"
+      ],
+      "FNX.us@KVCRDT": [
+        "FNX.First.Nations.Experience.us2"
+      ],
       "FreeSpeechTV.us@SD": [
         "Free.Speech.TV.us2"
       ],
       "FunRoads.us@SD": [
         "Fun.Roads.us2"
+      ],
+      "GamePlus.ca@SD": [
+        "Game+.Game.Plus.HD.us2"
       ],
       "GreatEntertainmentTelevision.us@SD": [
         "Great.Entertainment.Television.us2"
@@ -37,17 +46,26 @@
       "INSP.us@SD": [
         "INSP.HD.us2"
       ],
-      "MarqueeSportsNetwork.us@SD": [
-        "Marquee.Sports.Network.HD.us2"
-      ],
       "MBCAmerica.us@SD": [
         "MBC.America.us2"
+      ],
+      "MSNOW.us@SD": [
+        "MS.NOW.HD.us2"
+      ],
+      "MarqueeSportsNetwork.us@SD": [
+        "Marquee.Sports.Network.HD.us2"
       ],
       "MeTVToons.us@SD": [
         "MeTV.Toons.us2"
       ],
-      "MSNOW.us@SD": [
-        "MS.NOW.HD.us2"
+      "MeritStreet.us@SD": [
+        "Merit.TV.us2"
+      ],
+      "MovieSphereGold.us@WFXT": [
+        "MovieSphere.Gold.us2"
+      ],
+      "Movies.us@KPVMLD": [
+        "Movies!.us2"
       ],
       "PBSKidsPacific.us@SD": [
         "PBS.Kids.West.Stream.us2"
@@ -57,6 +75,12 @@
       ],
       "PursuitChannel.us@SD": [
         "Pursuit.Channel.us2"
+      ],
+      "REVNAction.us@SD": [
+        "RevN.us2"
+      ],
+      "RacerNetwork.us@SD": [
+        "RACER.Network.HD.us2"
       ],
       "RecipeTV.us@SD": [
         "Recipe.TV.HD.us2"
@@ -76,14 +100,20 @@
       "TheArchive.us@SD": [
         "The.Archive.us2"
       ],
+      "TheCowboyChannelCanada.ca@SD": [
+        "The.Cowboy.Channel.us2"
+      ],
+      "TheYoungTurks.us@SD": [
+        "TYT.The.Young.Turks.us2"
+      ],
+      "TotalCrime.ca@CA": [
+        "Total.Crime.us2"
+      ],
       "Willow.us@SD": [
         "Willow.Cricket.HD.us2"
       ],
       "WorldHarvestTV.us@SD": [
         "World.Harvest.Television.us2"
-      ],
-      "TheYoungTurks.us@SD": [
-        "TYT.The.Young.Turks.us2"
       ]
     }
   },
@@ -127,8 +157,8 @@
   {
     "url": "https://i.mjh.nz/SamsungTVPlus/all.xml.gz",
     "channels": {
-      "bonappetit.us@SD": [
-        "USBC44000226R"
+      "AFV.us@SD": [
+        "US4100038R9"
       ],
       "EurovisionSport.uk@Europe": [
         "GB3800003OS"
@@ -139,14 +169,44 @@
       "LegoChannel.us@SD": [
         "CABC230001363"
       ],
+      "MovieMusicbyStingray.ca@HD": [
+        "US4700003DP",
+        "CA4700002IH"
+      ],
       "MysteryScienceTheater3000.us@SD": [
         "US4500004SQ"
+      ],
+      "RevryQueer.us@SD": [
+        "USBA3800003VP"
+      ],
+      "StingrayHolidayHits.ca@SD": [
+        "USBD3500022DN",
+        "CABD1200037BS"
+      ],
+      "StingrayHolidayscapes.ca@HD": [
+        "USBD3500038R6",
+        "CA4000013R"
+      ],
+      "StingrayJukeboxOldies.ca@SD": [
+        "US4700006XL",
+        "CA47000052C"
+      ],
+      "StingrayTodaysLatinPop.ca@SD": [
+        "USBD3500009Y3",
+        "CABD1200027JL"
       ],
       "TraceUK.uk@HD": [
         "GBBD19000026B"
       ],
+      "WeatherSpy.au@SD": [
+        "USAJ3400014LK",
+        "CAAJ3400007TS"
+      ],
       "ZenLIFEbyStingray.ca@HD": [
         "CA600002VE"
+      ],
+      "bonappetit.us@SD": [
+        "USBC44000226R"
       ]
     }
   },
@@ -165,10 +225,27 @@
       "FEVATV.ca@SD": [
         "647f8d22a2fc3fadb4721685-6a023b768c3c8db908ecaee4"
       ],
+      "FilmRiseAnime.us@US": [
+        "6a1610bebdf296985fd95603-6449369eb3ff17382cae5819"
+      ],
+      "FilmRiseClassicTV.us@US": [
+        "6a1610bebdf296985fd95603-66ea07049502c5778b828d3f"
+      ],
+      "FilmRiseWestern.us@US": [
+        "6a1610bebdf296985fd95603-6449369eb3ff17382cae57fd"
+      ],
+      "SmurfTV.us@SD": [
+        "5e20b730f2f8d5003d739db7-639b8d803f4612cc150a5721"
+      ],
       "WSOCNow.us@SD": [
         "6a1610bebdf296985fd95603-61f9a6aec68d91e31d4cc86e"
       ]
-    }
+    },
+    "override_channels": [
+      "FilmRiseAnime.us@US",
+      "FilmRiseClassicTV.us@US",
+      "FilmRiseWestern.us@US"
+    ]
   },
   {
     "url": "https://epgshare01.online/epgshare01/epg_ripper_PLEX1.xml.gz",
@@ -178,6 +255,15 @@
       ],
       "OnPatrolLive.us@HD": [
         "plex.tv.On.Patrol:.Live.plex"
+      ],
+      "Outlaw.us@WGGSTV": [
+        "plex.tv.Outlaw.plex"
+      ],
+      "ReutersTV.us@SD": [
+        "plex.tv.The.Reuters.60.plex"
+      ],
+      "StingrayGreatestHits.ca@SD": [
+        "plex.tv.Stingray.Greatest.Hits.plex"
       ],
       "TheDoctors.us@HD": [
         "plex.tv.The.Doctors.plex"
@@ -198,6 +284,18 @@
   {
     "url": "https://epgshare01.online/epgshare01/epg_ripper_US_LOCALS1.xml.gz",
     "channels": {
+      "ABC.us@KEROTV": [
+        "KERO-DT.us_locals1"
+      ],
+      "ABC.us@KGTV": [
+        "KGTV-DT.us_locals1"
+      ],
+      "BEKSports.us@West": [
+        "BEK.Sports.24/7.(KNDB2).Bismarck,.ND.us_locals1"
+      ],
+      "Fox.us@KTTV": [
+        "KTTV-DT.us_locals1"
+      ],
       "KIIOLD101.us@HD": [
         "KIIO-LD.us_locals1"
       ],
@@ -207,19 +305,39 @@
       "KPVMLD251.us@HD": [
         "KPVM-LD.us_locals1"
       ],
+      "NBC.us@KNTV": [
+        "KNTV-DT.us_locals1"
+      ],
+      "NBC.us@KSBW": [
+        "KSBW-DT.us_locals1"
+      ],
+      "NBC.us@KSBY": [
+        "KSBY-DT.us_locals1"
+      ],
       "WATCDT571.us@HD": [
         "WATC-DT.us_locals1"
       ],
       "WVVHCD181.us@HD": [
         "WVVH-CD.us_locals1"
       ]
-    }
+    },
+    "override_channels": [
+      "ABC.us@KEROTV",
+      "ABC.us@KGTV",
+      "Fox.us@KTTV",
+      "NBC.us@KNTV",
+      "NBC.us@KSBW",
+      "NBC.us@KSBY"
+    ]
   },
   {
     "url": "https://epgshare01.online/epgshare01/epg_ripper_CA2.xml.gz",
     "channels": {
       "KnowledgeNetwork.ca@SD": [
         "Knowledge.Network.ca2"
+      ],
+      "StingrayTikTokRadio.ca@HD": [
+        "TikTok.Radio.on.Stingray.ca2"
       ]
     }
   },
@@ -260,6 +378,36 @@
     "channels": {
       "SkyRacing1.au@SD": [
         "SkyRacing1.au"
+      ]
+    }
+  },
+  {
+    "url": "https://epgshare01.online/epgshare01/epg_ripper_UK1.xml.gz",
+    "channels": {
+      "BritAsiaTV.uk@HD": [
+        "Brit.Asia.TV.uk"
+      ],
+      "TalkTV.uk@SD": [
+        "TalkRadio.(TalkTV).uk"
+      ]
+    }
+  },
+  {
+    "url": "https://i.mjh.nz/PlutoTV/all.xml.gz",
+    "channels": {
+      "StingrayCityscapes.ca@HD": [
+        "6a74c028c1842722eafad356"
+      ]
+    }
+  },
+  {
+    "url": "https://i.mjh.nz/Roku/all.xml.gz",
+    "channels": {
+      "ARTFLIXMovieClassics.us@SD": [
+        "205560cb5f4b7d87ad7073c53a81f931"
+      ],
+      "StingrayCozyCafe.ca@HD": [
+        "f8f717f72440fb688192f83faa71a8ab"
       ]
     }
   }
