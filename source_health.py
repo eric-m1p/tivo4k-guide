@@ -340,6 +340,7 @@ def _selection_key(
         height = int(entry.get("height") or 0)
     if bitrate <= 0:
         bitrate = int(entry.get("bitrate") or 0)
+    fps = float(entry.get("fps") or 0.0)
     latency = int((probe_info or {}).get("latency_ms") or 0) if probe_ok else 10**9
     reliability = _host_reliability(state, host, host_stats)
     streak = int(entry.get("streak") or 0)
@@ -350,6 +351,7 @@ def _selection_key(
         0 if probe_ok is True else (1 if probe_ok is None else 2),
         -_quality_score(src, height),
         -min(height, 4320),
+        0 if fps >= 48.0 else 1,
         0 if (src.get("verified") or entry.get("verified")) else 1,
         -reliability,
         -min(bitrate, 50_000_000),
@@ -1288,6 +1290,7 @@ def ingest_telemetry_from_git(
     last_ts = str(state.get("last_telemetry_ts") or "")
     max_ts = last_ts
     hosts = state.setdefault("hosts", {})
+    sources_map = state.setdefault("sources", {})
     processed = 0
 
     for name in names:
@@ -1317,21 +1320,40 @@ def ingest_telemetry_from_git(
             if ts > max_ts:
                 max_ts = ts
             rtype = row.get("type")
-            host = str(row.get("source_host") or row.get("host") or "").strip().lower()
+            url = str(row.get("url") or "").strip()
+            host = str(row.get("source_host") or row.get("host") or host_of(url)).strip().lower()
             if not host:
                 continue
             bucket = hosts.setdefault(host, {"ok": 0, "fail": 0, "height": 0, "stream_kbps": 0, "last_seen": ""})
             if rtype in ("source_result", "source_scan"):
-                if row.get("ok"):
+                ok_val = bool(row.get("ok"))
+                if ok_val:
                     bucket["ok"] = int(bucket.get("ok") or 0) + 1
                 else:
                     bucket["fail"] = int(bucket.get("fail") or 0) + 1
                 h = int(row.get("height") or 0)
+                fps = float(row.get("fps") or 0.0)
                 kbps = int(row.get("bitrate_kbps") or row.get("stream_kbps") or 0)
                 if h > 0:
                     bucket["height"] = max(int(bucket.get("height") or 0), h)
                 if kbps > 0:
                     bucket["stream_kbps"] = max(int(bucket.get("stream_kbps") or 0), kbps)
+                if url:
+                    entry = sources_map.setdefault(url, {"ok": 0, "fail": 0, "streak": 0})
+                    if ok_val:
+                        entry["ok"] = int(entry.get("ok") or 0) + 1
+                        entry["streak"] = 0
+                        if h >= 480:
+                            entry["verified"] = True
+                    else:
+                        entry["fail"] = int(entry.get("fail") or 0) + 1
+                        entry["streak"] = int(entry.get("streak") or 0) + 1
+                    if h > 0:
+                        entry["height"] = max(int(entry.get("height") or 0), h)
+                    if fps > 0:
+                        entry["fps"] = max(float(entry.get("fps") or 0.0), round(fps, 1))
+                    if kbps > 0:
+                        entry["bitrate"] = max(int(entry.get("bitrate") or 0), kbps * 1000)
                 processed += 1
             elif rtype in ("first_frame", "source_quality"):
                 h = int(row.get("height") or 0)
