@@ -240,5 +240,65 @@ class Schema(unittest.TestCase):
         self.assertFalse(payload["config"]["sites"]["roxiestreams"]["enabled"])
 
 
+def char_array_js(name: str, text: str, k1: int, k2: int, fa: str, fb: str) -> str:
+    """Build a streamxhd-style scrambled string: shuffled [index, base64(junk+digits+junk)] pairs."""
+    import base64
+    import random
+
+    pairs = [(i * 7 + 3, base64.b64encode(f"aB{ord(ch) + k1 + k2}xY".encode()).decode()) for i, ch in enumerate(text)]
+    random.Random(len(text)).shuffle(pairs)
+    body = ",".join(f'[{i},"{v}"]' for i, v in pairs)
+    return (f'var {name}="",arr{name}=[]; arr{name}=[{body}]; arr{name}.sort((a,b)=>a[0]-b[0]); '
+            f"var k={fa}()+{fb}(); arr{name}.forEach(e=>{{}}); "
+            f"function {fa}(){{return {k1};}} function {fb}(){{return {k2};}}")
+
+
+class PlaylistFetch(unittest.TestCase):
+    url = "https://khala.example/global/appletv2/index.m3u8?ip=1.2.3.4&token=33998049ba6b-1795343132"
+
+    def test_scrambled_url_decodes_whole(self):
+        page = (char_array_js("adsPayload", '{"enabled":true,"url":"https://ads.example/x"}', 64995, 696565, "tA", "jB")
+                + char_array_js("playbackURL", self.url, 75710, 823288, "sM", "jI"))
+        self.assertEqual(sh._manifest_from_text(page), self.url)
+
+    def test_worker_players_are_browser_only(self):
+        page = 'const cdnUrl = "https://edge.example/sh/access/U0hBQ0NFU1M/cdn/hls/x.json"; const playlistUrl = "https://edge.example/sh/cdn/hls/x.m3u8";'
+        self.assertTrue(sh._browser_only_player(page))
+        meta = sh._quality_meta("https://embed.example/hls_co.php", page, sh.PROBE_HEADERS, 5)
+        self.assertEqual(meta["manifest_status"], "")
+        self.assertTrue(meta["manifest"].endswith("x.m3u8"))
+
+    def test_playlist_403_is_a_hint_not_a_failure(self):
+        info = {"ok": True, "status": "200", "height": 0, "manifest_status": "403"}
+        self.assertEqual(sh.apply_manifest_failures({"u": info}), 1)
+        self.assertTrue(info["ok"])
+        self.assertEqual(info["manifest_dead"], "403")
+        state = {"sources": {"https://a.example/1": {"ok": 1, "fail": 0, "height": 720, "verified": True}}}
+        for i in range(4):
+            sh._record(state, "https://a.example/1", True, "200", NOW + i, True, manifest_dead="404")
+        entry = state["sources"]["https://a.example/1"]
+        self.assertEqual((entry["fail"], entry.get("dead_fails", 0), entry.get("blocked", False)), (0, 0, False))
+        self.assertEqual(entry["height"], 0)  # stale measurement dropped
+        self.assertFalse(sh.is_disabled(entry, NOW + 10))
+
+    def test_old_playlist_quarantines_are_forgiven_once(self):
+        state = {"sources": {
+            "https://a.example/1": {"last_status": "manifest-403", "fail": 4, "streak": 4, "quarantines": 2,
+                                    "disabled_until": NOW + H, "vantages": {"ci": {"streak": 4}}},
+            "https://b.example/1": {"last_status": "manifest-404", "blocked": True, "blocked_reason": "HTTP manifest-404 x2",
+                                    "dead_fails": 2, "fail": 2},
+            "https://c.example/1": {"last_status": "manifest-403", "fail": 3, "app_fail": 2, "disabled_until": NOW + H},
+            "https://d.example/1": {"last_status": "timeout", "fail": 3, "disabled_until": NOW + H},
+        }}
+        self.assertEqual(sh._forgive_manifest_failures(state), 2)
+        src = state["sources"]
+        self.assertFalse(sh.is_disabled(src["https://a.example/1"], NOW))
+        self.assertFalse(sh.is_disabled(src["https://b.example/1"], NOW))
+        self.assertTrue(sh.is_disabled(src["https://c.example/1"], NOW))  # an app failed it too
+        self.assertTrue(sh.is_disabled(src["https://d.example/1"], NOW))
+        src["https://a.example/1"].update({"last_status": "manifest-403", "fail": 5})
+        self.assertEqual(sh._forgive_manifest_failures(state), 0)  # runs once
+
+
 if __name__ == "__main__":
     unittest.main()

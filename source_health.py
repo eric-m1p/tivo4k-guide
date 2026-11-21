@@ -210,12 +210,44 @@ def _entry(state: dict, url: str) -> dict:
     return entry
 
 
+def _forgive_manifest_failures(state: dict) -> int:
+    """One-time: undo quarantines/blocks that only playlist-fetch failures caused.
+
+    Before 2026-11-21 a 403/404 on the playlist counted as a probe failure (two
+    404s = permanent block). Those fetches were wrong (scrambled tokens, worker
+    players), so sources whose last verdict was one and that no app has failed
+    get a clean slate.
+    """
+    done = state.setdefault("migrations", [])
+    if "manifest_soft" in done:
+        return 0
+    forgiven = 0
+    for entry in (state.get("sources") or {}).values():
+        if not isinstance(entry, dict) or not str(entry.get("last_status") or "").startswith("manifest-"):
+            continue
+        if int(entry.get("app_fail") or 0):
+            continue
+        if entry.get("blocked") and not str(entry.get("blocked_reason") or "").startswith("HTTP manifest-"):
+            continue
+        for key in ("fail", "streak", "dead_fails", "quarantines", "disabled_until"):
+            entry[key] = 0
+        entry["blocked"] = False
+        for key in ("blocked_reason", "blocked_at", "vantages"):
+            entry.pop(key, None)
+        forgiven += 1
+    done.append("manifest_soft")
+    if forgiven:
+        print(f"[health] migration: cleared {forgiven} sources judged only by playlist-fetch failures", flush=True)
+    return forgiven
+
+
 def load_state(path: str | os.PathLike) -> dict:
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         if isinstance(raw, dict) and isinstance(raw.get("sources"), dict):
             for entry in raw["sources"].values():
                 _migrate_entry(entry)
+            _forgive_manifest_failures(raw)
             return raw
     except Exception:
         pass
@@ -583,39 +615,39 @@ def _decode_js_concat(text: str) -> str:
     return ""
 
 
-def _decode_char_arrays(text: str) -> str:
-    """Decode `String.fromCharCode(parseInt(atob(v))-k)` pages (streamxhd).
+_CHAR_ARRAY_RE = re.compile(r'(\w+)\s*=\s*\[\s*(\[\s*\d+\s*,\s*"[^"]+"\s*\](?:\s*,\s*\[\s*\d+\s*,\s*"[^"]+"\s*\])*)\s*\]\s*;')
+_CHAR_KEY_RE = re.compile(r"var\s+k\s*=\s*(\w+)\(\)\s*\+\s*(\w+)\(\)")
 
-    The page stores shuffled `[index, base64]` pairs and subtracts the sum of
-    two constant functions from the digits left after decoding. Rebuild the
-    string and let the normal manifest regex find the URL.
+
+def _decode_char_arrays(text: str) -> str:
+    """Decode `String.fromCharCode(parseInt(atob(v).replace(/\\D/g,''))-k)` pages (streamxhd).
+
+    The page stores shuffled `[index, base64]` pairs per string (stream URL,
+    ad payloads...); each array is followed by its own `var k=f()+g()` whose
+    two functions return the constants to subtract. Returns every decoded
+    string, newline-separated, for the manifest regex to search.
     """
-    kexpr = re.search(r"var\s+k\s*=\s*(\w+)\(\)\+(\w+)\(\)", text)
-    if not kexpr:
-        return ""
-    total = 0
-    for name in kexpr.groups():
-        const = re.search(r"function\s+" + re.escape(name) + r"\(\)\{return\s+(\d+)", text)
-        if const:
-            total += int(const.group(1))
-    if total <= 0:
-        return ""
-    for array in re.findall(r"=\[\[(.*?)\];", text, re.S):
-        pairs = re.findall(r'\[(\d+),"([^"]+)"\]', array)
+    out = []
+    for match in _CHAR_ARRAY_RE.finditer(text):
+        pairs = re.findall(r'\[\s*(\d+)\s*,\s*"([^"]+)"\s*\]', match.group(2))
         if len(pairs) < 8:
+            continue
+        kexpr = _CHAR_KEY_RE.search(text, match.end(), match.end() + 400)
+        if not kexpr:
+            continue
+        total = 0
+        for name in kexpr.groups():
+            const = re.search(r"function\s+" + re.escape(name) + r"\s*\(\)\s*\{\s*return\s+(\d+)", text)
+            total += int(const.group(1)) if const else 0
+        if total <= 0:
             continue
         chars = []
         for _, encoded in sorted(pairs, key=lambda item: int(item[0])):
             digits = "".join(ch for ch in _b64_decode(encoded) if ch.isdigit())
-            if not digits:
-                continue
-            code = int(digits) - total
-            if 32 <= code < 127:
-                chars.append(chr(code))
-        candidate = "".join(chars)
-        if ".m3u8" in candidate or ".mpd" in candidate:
-            return candidate
-    return ""
+            if digits and 0 < int(digits) - total < 0x110000:
+                chars.append(chr(int(digits) - total))
+        out.append("".join(chars))
+    return "\n".join(out)
 
 
 def _manifest_from_text(text: str) -> str:
@@ -784,6 +816,48 @@ def _quality_from_manifest(text: str) -> tuple[int, int]:
     return height, bitrate
 
 
+# Players whose playlist arrives through a signed worker channel (edgestream's
+# CdnDelivery behind streamec/embedcenter): never fetchable outside a browser.
+_BROWSER_ONLY_MARKERS = ("/sh/access/", "new CdnDelivery(")
+
+
+def _browser_only_player(text: str) -> bool:
+    return any(marker in (text or "") for marker in _BROWSER_ONLY_MARKERS)
+
+
+def _origin(url: str) -> str:
+    from urllib.parse import urlparse
+
+    parts = urlparse(url)
+    return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else ""
+
+
+def _fetch_manifest(url: str, page_url: str, headers: dict, timeout: int) -> tuple[str, str]:
+    """GET a playlist the way the player's XHR does: page origin as Referer plus Origin.
+
+    Falls back to the full page URL as Referer (some CDNs check the path).
+    Returns (status, body); body is "" unless the response was 2xx/3xx.
+    """
+    import requests
+
+    origin = _origin(page_url)
+    attempts = [{**headers, "Referer": origin + "/", "Origin": origin}] if origin else []
+    attempts.append({**headers, "Referer": page_url})
+    status = ""
+    for attempt in attempts:
+        try:
+            with requests.get(url, headers=attempt, timeout=(timeout, timeout),
+                              stream=True, allow_redirects=True) as response:
+                status = str(response.status_code)
+                if 200 <= response.status_code < 400:
+                    return status, _read_limited(response, MANIFEST_LIMIT).decode("utf-8", "replace")
+                if response.status_code not in (401, 403):
+                    return status, ""
+        except Exception:
+            continue
+    return status, ""
+
+
 def _quality_meta(url: str, text: str, headers: dict, timeout: int,
                   depth: int = 0, seen: set[str] | None = None) -> dict:
     height = 0
@@ -804,6 +878,7 @@ def _quality_meta(url: str, text: str, headers: dict, timeout: int,
     else:
         found = _manifest_from_text(text)
         manifest_referer = url
+        found_text = text
         if not found and depth < 3:
             for iframe_url in _iframe_urls(text, url)[:4]:
                 if iframe_url in seen:
@@ -822,6 +897,7 @@ def _quality_meta(url: str, text: str, headers: dict, timeout: int,
                             found = _manifest_from_text(iframe_text)
                             if found:
                                 manifest_referer = iframe_url
+                                found_text = iframe_text
                                 break
                             player_url = _site_player_url(iframe_text)
                             if player_url:
@@ -886,25 +962,18 @@ def _quality_meta(url: str, text: str, headers: dict, timeout: int,
             height = int(player["height"])
             bitrate = max(bitrate, int(player.get("bitrate") or 0))
             manifest = manifest or str(player.get("manifest") or "")
-        if found:
+        if found and _browser_only_player(found_text):
+            # The player gets its playlist through a signed, IP-bound JS worker;
+            # a direct fetch is always refused. Only the playback check can tell.
             manifest = manifest or found
-            try:
-                import requests
-                with requests.get(
-                    found,
-                    headers={**headers, "Referer": manifest_referer},
-                    timeout=(timeout, timeout),
-                    stream=True,
-                    allow_redirects=True,
-                ) as response:
-                    manifest_status = str(response.status_code)
-                    if 200 <= response.status_code < 400:
-                        body = _read_limited(response, MANIFEST_LIMIT).decode("utf-8", "replace")
-                        parsed_height, parsed_bitrate = _quality_from_manifest(body)
-                        if parsed_height > 0:
-                            height, bitrate = parsed_height, parsed_bitrate
-            except Exception:
-                pass
+        elif found:
+            manifest = manifest or found
+            status, body = _fetch_manifest(found, manifest_referer, headers, timeout)
+            manifest_status = status
+            if body:
+                parsed_height, parsed_bitrate = _quality_from_manifest(body)
+                if parsed_height > 0:
+                    height, bitrate = parsed_height, parsed_bitrate
     return {
         "height": height,
         "bitrate": bitrate,
@@ -1060,24 +1129,20 @@ def probe_sources_detailed(
 
 
 def apply_manifest_failures(results: dict[str, dict], trusted: bool = True) -> int:
-    """Turn a dead manifest (403/404/410) into a probe failure.
+    """Mark sources whose playlist fetch failed (403/404/410). A hint, not a failure.
 
-    The outer embed page often stays 200 while the tokenized m3u8 it points at
-    has expired. Without this, a source measured earlier keeps its height and
-    clears its fail streak forever even though playback gets a 403.
+    The page check's own playlist fetch is unreliable: tokens are IP-bound or
+    hidden in scrambled JS, some players use a worker channel. So the page stays
+    ok; the stale measured quality is dropped and the playback check (and the
+    apps) decide. Returns how many were marked.
     """
-    if not trusted:
-        return 0
     changed = 0
     for info in results.values():
-        if not info.get("ok"):
-            continue
-        if int(info.get("height") or 0) > 0:
+        if not info.get("ok") or int(info.get("height") or 0) > 0:
             continue
         status = str(info.get("manifest_status") or "")
         if status in MANIFEST_DEAD_STATUSES:
-            info["ok"] = False
-            info["status"] = f"manifest-{status}"
+            info["manifest_dead"] = status
             changed += 1
     return changed
 
@@ -1488,7 +1553,7 @@ def health_score(entry: dict, state: dict | None = None, url: str = "") -> float
 
 def _record(state: dict, url: str, ok: bool, detail: str, now: int,
             trust_failures: bool, height: int = 0, bitrate: int = 0,
-            manifest: str = "") -> None:
+            manifest: str = "", manifest_dead: str = "") -> None:
     """Quick page check from the CI runner (vantage "ci")."""
     entries = state.setdefault("sources", {})
     if ok:
@@ -1504,11 +1569,20 @@ def _record(state: dict, url: str, ok: bool, detail: str, now: int,
             entry["blocked"] = False
             entry.pop("blocked_reason", None)
             entry.pop("blocked_at", None)
+        if entry is None and manifest_dead:
+            entry = _entry(state, url)
         if entry is None:
             return  # a working URL with no history needs no entry
         entry["ok"] = min(int(entry.get("ok") or 0) + 1, 9999)
         entry["last_ok"] = now
         entry["last_status"] = str(detail)[:24]
+        if manifest_dead:
+            # The playlist URL no longer answers: drop a stale measurement, count nothing.
+            entry["last_status"] = f"manifest-{manifest_dead}"[:24]
+            if not int(height or 0):
+                entry["height"] = 0
+                entry["bitrate"] = 0
+                entry["verified"] = False
         _halve_if_large(entry, "ok", "fail")
         record_vantage(entry, CI_VANTAGE, True, now)
         return
@@ -1745,6 +1819,9 @@ def apply_source_health(
                 "ignoring failures this run (runner network looks blocked)",
                 flush=True,
             )
+        # Playlist fetch failures are only hints; the playback check below goes
+        # to those sources first, since the page check could not judge them.
+        manifest_failures = apply_manifest_failures(detailed, trusted=trusted)
         # Level 2: real playback in a browser for page-ok URLs, in priority
         # order, skipping ones verified playing within playback_recheck_min.
         if quality_budget > 0:
@@ -1755,6 +1832,7 @@ def apply_source_health(
                 if detailed.get(url, {}).get("ok")
                 and now - int(entries.get(url, {}).get("last_play") or 0) >= recheck
             ]
+            browser_urls.sort(key=lambda url: 0 if detailed[url].get("manifest_dead") else 1)
             if plan is None and len(browser_urls) > quality_budget:
                 # Rotate the window so successive runs cover the whole catalogue.
                 offset = now % len(browser_urls)
@@ -1785,9 +1863,6 @@ def apply_source_health(
                         info["bitrate"] = int(quality.get("bitrate") or 0)
                         info["verified"] = True
                         info["quality"] = str(quality.get("quality") or "")
-        manifest_failures = apply_manifest_failures(detailed, trusted=trusted)
-        if manifest_failures:
-            results = {url: (info["ok"], info["status"]) for url, info in detailed.items()}
         for url, info in detailed.items():
             if not info["ok"] and info.get("status") == "starting_soon" and url not in non_future_urls:
                 # Upcoming games legitimately show "Starting Soon" before kickoff.
@@ -1798,6 +1873,7 @@ def apply_source_health(
                 height=int(info.get("height") or 0),
                 bitrate=int(info.get("bitrate") or 0),
                 manifest=str(info.get("manifest") or ""),
+                manifest_dead=str(info.get("manifest_dead") or ""),
             )
         if not trusted:
             # Do not demote anything when the runner's probes look blocked.
