@@ -19,6 +19,7 @@ So the source list is the set of gooz embed URLs, no browser required.
 from __future__ import annotations
 
 import argparse
+import html as html_lib
 import re
 import sys
 
@@ -45,7 +46,7 @@ def _parse_event(html: str, url: str) -> dict | None:
     m = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.S | re.I)
     if not m:
         return None
-    title = re.sub(r"<[^>]+>|\s+", " ", m.group(1)).strip()
+    title = html_lib.unescape(re.sub(r"<[^>]+>|\s+", " ", m.group(1))).strip()
     sport = re.sub(r"^.*?/(?:event|watch)/", "", url).split("/", 1)[0]
 
     date_m = re.search(r"Date:\s*(?:</dt>)?\s*(?:<[^>]+>)*\s*(\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}\s*(?:ET|EST|EDT)?)", html, re.I)
@@ -66,6 +67,11 @@ def _parse_event(html: str, url: str) -> dict | None:
     if not sources:  # some pages use data attributes instead of inline handlers
         for sm in re.finditer(r'data-stream(?:-id)?="(\d+)"', html):
             sources.append(C.source(ORIGIN, "Server", EMBED.format(sm.group(1)), "embed", BASE + "/"))
+    if not sources:
+        # Live pages now preload one stream in <iframe id="cx-iframe"> and leave the
+        # #streams button list empty; upcoming pages have no iframe id at all.
+        for i, sid in enumerate(dict.fromkeys(re.findall(r"new-stream-embed/(\d+)", html)), 1):
+            sources.append(C.source(ORIGIN, f"Server {i}", EMBED.format(sid), "embed", BASE + "/"))
 
     return {
         "title": title,
