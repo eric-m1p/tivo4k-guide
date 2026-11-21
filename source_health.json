@@ -78,10 +78,10 @@
       "stream_kbps": 0
     },
     "taifood-blog.asia": {
-      "fail": 11,
+      "fail": 12,
       "height": 1080,
-      "last_seen": "2026-11-20T08:46:49.205Z",
-      "ok": 49,
+      "last_seen": "2026-11-20T23:49:39.826Z",
+      "ok": 52,
       "stream_kbps": 9400
     },
     "watch.sling.com": {
@@ -92,7 +92,7 @@
       "stream_kbps": 3267
     }
   },
-  "last_telemetry_ts": "2026-11-20T08:46:49.205Z",
+  "last_telemetry_ts": "2026-11-20T23:49:39.826Z",
   "sources": {
     "https://104game.click/player/2/185": {
       "bitrate": 0,
@@ -3921,21 +3921,21 @@
     "multi_host_events": 0,
     "probe_all": true,
     "probe_failed": 0,
-    "probe_ok": 409,
-    "probed": 409,
+    "probe_ok": 401,
+    "probed": 401,
     "quality_browser_measured": 0,
     "quality_manifests": 0,
     "quality_measured": 0,
     "quality_probed": 120,
-    "selected_sources": 383,
+    "selected_sources": 375,
     "sources_blocked": 0,
     "sources_quarantined": 0,
-    "sources_raw": 409,
-    "sources_seen": 409,
+    "sources_raw": 401,
+    "sources_seen": 401,
     "trimmed_events": 4,
     "trusted": true,
     "unprobed": 0
   },
-  "updated_at": 1795201095,
+  "updated_at": 1795220895,
   "version": 1
 }
