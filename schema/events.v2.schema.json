@@ -167,6 +167,18 @@
                 "recheck_min": { "type": "integer", "minimum": 0, "description": "Skip a source whose playback was verified this recently." }
               },
               "additionalProperties": false
+            },
+            "channels": {
+              "type": "object",
+              "description": "Sparse Live TV channel checks (channel_health.py over live_channels.json).",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "per_run": { "type": "integer", "minimum": 0, "description": "Stream URLs probed per run." },
+                "every_hours": { "type": "integer", "minimum": 1, "description": "A URL is probed at most once in this many hours." },
+                "demote_after_fails": { "type": "integer", "minimum": 1, "description": "Failures in a row before a URL sorts after its channel's healthy sources." },
+                "timeout_sec": { "type": "integer", "minimum": 2 }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

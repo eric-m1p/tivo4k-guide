@@ -47,7 +47,7 @@ jobs:
           python -m playwright install-deps chromium
 
       - name: Feed v2 + source health rules (unit tests)
-        run: python3 -m unittest test_feed_v2 test_source_health_v2
+        run: python3 -m unittest test_feed_v2 test_source_health_v2 test_channel_health
 
       - name: Fetch device telemetry branch (optional)
         run: git fetch origin telemetry:refs/remotes/origin/telemetry || true
@@ -64,12 +64,21 @@ jobs:
             --json events.json \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # Live TV: a small rotating sample of live_channels.json stream URLs
+      # (policy.probe.channels); failing URLs sort after their channel's healthy ones.
+      - name: Channel health (sparse)
+        run: python3 channel_health.py | tee -a "$GITHUB_STEP_SUMMARY" || echo "channel health skipped"
+
+      # Backup HLS streams for the TV app's Sling channels, matched by name.
+      - name: Channel backups for the TV app
+        run: python3 channel_alts.py | tee -a "$GITHUB_STEP_SUMMARY" || echo "channel backups skipped"
+
       - name: Commit events.json if it changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           python3 feed_v2.py validate events.json
-          git add events.json source_health.json source_blocklist.json
+          git add events.json source_health.json source_blocklist.json live_channels.json channel_alts.json
           if git diff --cached --quiet; then
             echo "events.json/source_health.json/source_blocklist.json unchanged."
           else
