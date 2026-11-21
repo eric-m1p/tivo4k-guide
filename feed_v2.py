@@ -68,6 +68,8 @@ _DASH_RE = re.compile(r"\s+[-–—]\s+")
 _SEP_RE = re.compile(r"\s+(?:vs\.?|v\.?|versus|@|at|x|-|–|—)\s+", re.I)
 _DISPLAY_VS_RE = re.compile(r"\s+(?:vs\.?|v\.?|versus)\s+", re.I)
 _RANK_RE = re.compile(r"(?:(?<=\s)|^)(?:#\d{1,2}|\(\d{1,2}\))\s+")
+# Bare AP/CFP top-25 rank at the start of a matchup side: "15 Iowa vs Illinois", "Chattanooga vs 3 Alabama".
+_BARE_RANK_RE = re.compile(r"^(?:[1-9]|1\d|2[0-5])\s+(?=[A-Za-z])")
 # "NBA Basketball: A vs B", "UFC 323: A vs B", "LIVE - A vs B"
 _PREFIX_RE = re.compile(r"^\s*(?:live|watch|stream)\s*[:\-|]\s*", re.I)
 
@@ -127,6 +129,12 @@ def clean_title(title: str) -> str:
         t = _DISPLAY_VS_RE.sub(" vs ", t)
     elif not _VS_RE.search(t) and len(_DASH_RE.findall(t)) == 1:
         t = _DASH_RE.sub(" vs ", t)  # "Juarez - Atlas"; "F1 - Las Vegas GP - Race" stays
+    vs_matches = list(_VS_RE.finditer(t))
+    if len(vs_matches) == 1:
+        m = vs_matches[0]
+        left = _BARE_RANK_RE.sub("", t[: m.start()].strip())
+        right = _BARE_RANK_RE.sub("", t[m.end():].strip())
+        t = f"{left}{m.group(0)}{right}"
     return re.sub(r"\s{2,}", " ", t).strip()
 
 

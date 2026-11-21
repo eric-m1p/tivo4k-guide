@@ -86,6 +86,17 @@ class DedupeTests(unittest.TestCase):
         ])
         self.assertEqual(len(out), 4)
 
+    def test_bare_ap_rank_merges_and_preserves_team_numbers(self):
+        out = run([
+            ev("15 Iowa vs Illinois", "American Football", "NCAA Division 1 Football", key="ev:ranked"),
+            ev("Iowa Hawkeyes at Illinois Fighting Illini", "American Football", "NCAAF", key="ev:full"),
+        ])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(len(out[0]["sources"]), 2)
+        self.assertEqual(v2.clean_title("Chattanooga vs 3 Alabama"), "Chattanooga vs Alabama")
+        self.assertEqual(v2.clean_title("1. FC Koln vs Schalke 04"), "1. FC Koln vs Schalke 04")
+        self.assertEqual(v2.clean_title("49ers vs Rams"), "49ers vs Rams")
+
     def test_far_apart_times_stay_apart(self):
         out = run([ev("Lakers vs Celtics", "Basketball", "NBA"), ev("Lakers vs Celtics", "Basketball", "NBA", start=NOW + 2 * 86400, status="future", key="ev:later")])
         self.assertEqual(len(out), 2)
