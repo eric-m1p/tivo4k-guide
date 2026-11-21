@@ -48,6 +48,32 @@ LOW_QUALITY_HEIGHT = 720
 DISABLE_STREAK = 3
 DISABLE_TOTAL = 8
 QUARANTINE_HOURS = (6, 12, 24, 72)
+
+
+def _load_policy_thresholds() -> None:
+    """Thresholds ship in feed_policy.json (the feed's policy block); constants above are fallbacks."""
+    global MIN_SOURCES_PER_EVENT, LOW_QUALITY_HEIGHT, DISABLE_STREAK, DISABLE_TOTAL, QUARANTINE_HOURS
+    here = os.path.dirname(os.path.abspath(__file__))
+    policy = None
+    # guide-repo keeps the file next to this module; the iptv/ copy reads guide-repo's.
+    for path in (os.path.join(here, "feed_policy.json"), os.path.join(here, "guide-repo", "feed_policy.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                policy = json.load(f)["policy"]
+            break
+        except (OSError, ValueError, KeyError):
+            continue
+    if policy is None:
+        return
+    weak, health = policy.get("weak_source") or {}, policy.get("health") or {}
+    MIN_SOURCES_PER_EVENT = int(weak.get("min_sources", MIN_SOURCES_PER_EVENT))
+    LOW_QUALITY_HEIGHT = int(weak.get("min_height", LOW_QUALITY_HEIGHT))
+    DISABLE_STREAK = int(health.get("quarantine_streak", DISABLE_STREAK))
+    DISABLE_TOTAL = int(health.get("fail_total_disable", DISABLE_TOTAL))
+    QUARANTINE_HOURS = tuple(int(h) for h in health.get("quarantine_hours") or QUARANTINE_HOURS)
+
+
+_load_policy_thresholds()
 KEEP_DAYS = 30
 FAILURE_TRUST_THRESHOLD = 0.65
 DEFINITIVE_STATUSES = {"404", "410"}

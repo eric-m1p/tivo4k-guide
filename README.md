@@ -22,6 +22,27 @@ committing `events.json` without any local machine in the loop).
 
 Run it by hand from the Actions tab ("Refresh Live Events Feed", then "Run workflow").
 
+#### Feed contract v2
+
+`events.json` follows `schema/events.v2.schema.json` (`schema_version: 2`). v2 only
+adds fields, so v1 readers keep working. The pipeline decides; the apps render:
+
+- `feed_v2.py` runs after the providers are merged: cleans titles, merges duplicate
+  rows of one fixture (`aliases` keeps the merged keys), sets `sport`, `group`,
+  `detail` and `icon`, pretty-prints league codes, moves 24/7 sources labeled as
+  another show, moves mirrors whose URL names another game, flags a channel stream
+  attached to two overlapping games (`shared_channel`, ranked last), and matches
+  ESPN scoreboards (`teams`, `espn`, live scores, start-time check, finished games
+  dropped). After the source-health pass it maps each source to its `site` and
+  wraps everything with `sites`, `policy` and `config`.
+- `feed_policy.json` holds the admin hooks: sport groups and their order, health
+  and weak-source thresholds (`source_health.py` reads them too), site and feature
+  kill switches, hidden groups (global and per device), and the oldest app build
+  that reads the feed.
+- `distill_events.py` refuses to write a feed that fails the schema.
+  `python3 feed_v2.py validate [path-or-url]` checks one by hand;
+  `python3 -m unittest test_feed_v2` runs the rules' tests (CI runs both).
+
 ### TV Guide (`guide.xml.gz`)
 
 A GitHub Actions job (`.github/workflows/guide.yml`) rebuilds the guide every

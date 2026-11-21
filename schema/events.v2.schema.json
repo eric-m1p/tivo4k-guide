@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/eric-m1p/tivo4k-guide/main/schema/events.v2.schema.json",
+  "title": "Slang live events feed v2",
+  "description": "events.json as written by distill_events.py. v2 is additive: every v1 field keeps its name and meaning, so v1 readers keep working. The pipeline decides sport, group, icon, site and scores; apps render and report.",
+  "type": "object",
+  "required": ["schema_version", "synced_at", "synced_at_iso", "total", "events", "sites", "policy", "config"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "synced_at": { "type": "integer", "minimum": 0 },
+    "synced_at_iso": { "type": "string" },
+    "total": { "type": "integer", "minimum": 0 },
+    "events": { "type": "array", "items": { "$ref": "#/$defs/event" } },
+    "sites": {
+      "description": "Every site a source can come from, keyed by site id. A site may aggregate several upstream providers (StreamCorner is one site).",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/site" }
+    },
+    "policy": { "$ref": "#/$defs/policy" },
+    "config": { "$ref": "#/$defs/config" }
+  },
+  "$defs": {
+    "status": { "enum": ["live", "future", "always_live"] },
+    "event": {
+      "type": "object",
+      "required": [
+        "canonical_key", "title", "category", "league", "status", "starts_at", "ends_at",
+        "starts_at_iso", "time_label", "score_summary", "poster_url", "origins", "sources", "updated_at",
+        "sport", "group", "icon", "sites"
+      ],
+      "properties": {
+        "canonical_key": { "type": "string", "minLength": 1 },
+        "aliases": {
+          "description": "canonical_keys of duplicate rows merged into this event (favorites saved under an old key still resolve).",
+          "type": "array", "items": { "type": "string" }
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "category": { "type": "string", "description": "Display name of the sport (from sport), e.g. Soccer, American Football." },
+        "league": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "starts_at": { "type": "integer", "minimum": 0 },
+        "ends_at": { "type": "integer", "minimum": 0 },
+        "starts_at_iso": { "type": "string" },
+        "time_label": { "type": "string" },
+        "score_summary": { "type": "string" },
+        "poster_url": { "type": "string" },
+        "origins": { "type": "array", "items": { "type": "string" } },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } },
+        "updated_at": { "type": "integer", "minimum": 0 },
+        "sport": { "type": "string", "pattern": "^[a-z_]+$", "description": "Sport key, e.g. american_football, basketball, soccer, entertainment." },
+        "group": { "type": "string", "description": "A policy.sport_groups name, or \"24/7\" for always_live channels." },
+        "detail": { "type": "string", "description": "Sub-heading inside the group (the sport name under More Sports)." },
+        "icon": { "type": "string", "description": "Material Symbols icon name, or boxing_ring (custom)." },
+        "sites": { "type": "array", "items": { "type": "string" }, "description": "Site ids of this event's sources, best first." },
+        "teams": {
+          "type": "array", "maxItems": 2,
+          "items": { "$ref": "#/$defs/team" },
+          "description": "Away first, then home, when the event matched a scoreboard."
+        },
+        "espn": {
+          "type": "object",
+          "required": ["league", "id"],
+          "properties": {
+            "league": { "type": "string", "description": "Key into policy.scoreboards." },
+            "id": { "type": "string" },
+            "state": { "enum": ["pre", "in", "post"] }
+          },
+          "additionalProperties": false
+        },
+        "start_checked": { "type": "boolean", "description": "starts_at was confirmed or corrected against a scoreboard." }
+      },
+      "additionalProperties": false
+    },
+    "team": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "short": { "type": "string" },
+        "abbr": { "type": "string" },
+        "logo": { "type": "string" },
+        "score": { "type": "string" },
+        "home": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": ["origin", "label", "url", "kind", "site"],
+      "properties": {
+        "origin": { "type": "string", "description": "Upstream provider tag (PPV, EXTRA, CHARLIE…)." },
+        "site": { "type": "string", "description": "Key into the top-level sites map." },
+        "label": { "type": "string" },
+        "url": { "type": "string", "pattern": "^https?://" },
+        "kind": { "type": "string" },
+        "referer": { "type": "string" },
+        "height": { "type": "integer", "minimum": 0 },
+        "bitrate": { "type": "integer", "minimum": 0 },
+        "fps": { "type": "number", "minimum": 0 },
+        "verified": { "type": "boolean" },
+        "quality": { "type": "string" },
+        "shared_channel": {
+          "type": "boolean",
+          "description": "The same channel stream is attached to another event at the same time, so it may show the other game. Ranked last."
+        }
+      },
+      "additionalProperties": false
+    },
+    "site": {
+      "type": "object",
+      "required": ["name", "providers"],
+      "properties": {
+        "name": { "type": "string" },
+        "home": { "type": "string" },
+        "providers": { "type": "array", "items": { "type": "string" }, "description": "origin tags that belong to this site." }
+      },
+      "additionalProperties": false
+    },
+    "sport_group": {
+      "type": "object",
+      "required": ["name", "sports"],
+      "properties": {
+        "name": { "type": "string" },
+        "icon": { "type": "string" },
+        "sports": { "type": "array", "items": { "type": "string" }, "description": "Sport keys whose events can land here (informational; the pipeline assigns each event's group)." }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "description": "Rules and thresholds the apps follow. Admin hooks live here and in config.",
+      "type": "object",
+      "required": ["sport_groups", "health", "weak_source", "status"],
+      "properties": {
+        "sport_groups": {
+          "type": "array", "items": { "$ref": "#/$defs/sport_group" },
+          "description": "Display order. The last group (More Sports) collects everything else."
+        },
+        "health": {
+          "type": "object",
+          "required": ["fail_omit", "quarantine_streak", "quarantine_hours"],
+          "properties": {
+            "fail_omit": { "type": "integer", "minimum": 1, "description": "Playback failures before a source is omitted/downgraded." },
+            "fail_total_disable": { "type": "integer", "minimum": 1 },
+            "quarantine_streak": { "type": "integer", "minimum": 1, "description": "Consecutive probe failures before quarantine." },
+            "quarantine_hours": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+            "fail_memory_hours": { "type": "integer", "minimum": 1, "description": "How long an on-device failure counts against a source." }
+          },
+          "additionalProperties": false
+        },
+        "weak_source": {
+          "type": "object",
+          "required": ["min_sources", "min_height"],
+          "properties": {
+            "min_sources": { "type": "integer", "minimum": 0, "description": "Keep weak sources only while an event has fewer good ones than this." },
+            "min_height": { "type": "integer", "minimum": 0, "description": "Below this height a measured source counts as weak." }
+          },
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "required": ["ended_grace_sec"],
+          "properties": {
+            "ended_grace_sec": { "type": "integer", "minimum": 0, "description": "An event stays live this long after ends_at." }
+          },
+          "additionalProperties": false
+        },
+        "scoreboards": {
+          "type": "object",
+          "description": "ESPN scoreboard URLs by league key, for apps that refresh scores between feed runs.",
+          "additionalProperties": { "type": "string", "pattern": "^https://" }
+        },
+        "score_refresh_sec": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "config": {
+      "description": "Switches an admin can flip without an app release.",
+      "type": "object",
+      "required": ["sites", "features", "groups_hidden", "devices", "apps"],
+      "properties": {
+        "sites": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object", "required": ["enabled"],
+            "properties": { "enabled": { "type": "boolean" } },
+            "additionalProperties": false
+          }
+        },
+        "features": {
+          "type": "object",
+          "description": "Feature kill switches. A missing key means on.",
+          "additionalProperties": { "type": "boolean" }
+        },
+        "groups_hidden": { "type": "array", "items": { "type": "string" } },
+        "devices": {
+          "type": "object",
+          "description": "Per-device overrides keyed by device name (devices.conf column 1 / Slang device name).",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "groups_hidden": { "type": "array", "items": { "type": "string" } },
+              "features": { "type": "object", "additionalProperties": { "type": "boolean" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "apps": {
+          "type": "object",
+          "description": "Oldest app build that reads this feed correctly. Older builds ask to update.",
+          "properties": {
+            "tv": {
+              "type": "object",
+              "properties": { "min_version_code": { "type": "integer", "minimum": 0 } },
+              "additionalProperties": false
+            },
+            "slang": {
+              "type": "object",
+              "properties": { "min_version": { "type": "string" } },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

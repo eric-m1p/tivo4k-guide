@@ -667,12 +667,15 @@ def dedupe_event_sources(events: list[dict]) -> list[dict]:
 
 
 def save_json(events: list[dict], now_sec: int, json_path: str) -> None:
-    payload = {
-        "synced_at": now_sec,
-        "synced_at_iso": datetime.datetime.fromtimestamp(now_sec, datetime.timezone.utc).isoformat(),
-        "total": len(events),
-        "events": events,
-    }
+    """Write the v2 feed (events + sites/policy/config). Refuses to publish an invalid feed."""
+    import feed_v2
+
+    payload = feed_v2.finalize(events, now_sec)
+    errors = feed_v2.validate(payload)
+    if errors:
+        for err in errors[:20]:
+            print(f"[schema] {err}", file=sys.stderr)
+        raise SystemExit(f"events.json failed schema v{feed_v2.SCHEMA_VERSION} ({len(errors)} errors); not written")
     tmp_path = f"{json_path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, separators=(",", ":"))
@@ -749,6 +752,12 @@ def main() -> int:
         default=0,
         help="max sources kept per event (0 = no cap: ranked by measured quality, dead mirrors dropped)",
     )
+    parser.add_argument(
+        "--scoreboards",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="match ESPN scoreboards for scores, team logos and start times (default: on)",
+    )
     parser.add_argument("--probe-budget", type=int, default=3000, help="max unique URLs probed per run")
     parser.add_argument("--probe-workers", type=int, default=32)
     parser.add_argument(
@@ -800,6 +809,19 @@ def main() -> int:
         events, _ = merge_site_feed(events, now_sec, sites, limit=args.sites_limit)
 
     events = dedupe_event_sources(events)
+
+    try:
+        import feed_v2
+        try:
+            import live_sites_common as sites_common
+            ident = sites_common.stream_identity
+        except Exception:  # noqa: BLE001
+            ident = None
+        events = feed_v2.enrich(
+            events, now_sec, scoreboards=args.scoreboards, time_label=format_time_label, ident=ident
+        )
+    except Exception as exc:  # noqa: BLE001 - never lose the feed over the enrich pass
+        print(f"Warning: v2 enrich pass failed ({exc}); publishing unmerged events", file=sys.stderr)
 
     if not events:
         print("Error: upstream feed returned 0 active events", file=sys.stderr)

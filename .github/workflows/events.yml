@@ -39,11 +39,14 @@ jobs:
 
       - name: Install Playwright + Chromium
         run: |
-          pip install -q requests playwright
+          pip install -q requests playwright jsonschema
           if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
             python -m playwright install chromium
           fi
           python -m playwright install-deps chromium
+
+      - name: Feed v2 rules (unit tests)
+        run: python3 -m unittest test_feed_v2
 
       - name: Fetch device telemetry branch (optional)
         run: git fetch origin telemetry:refs/remotes/origin/telemetry || true
@@ -62,6 +65,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 feed_v2.py validate events.json
           git add events.json source_health.json source_blocklist.json
           if git diff --cached --quiet; then
             echo "events.json/source_health.json/source_blocklist.json unchanged."

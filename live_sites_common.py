@@ -94,7 +94,8 @@ def get_many(urls: list[str], workers: int = 8, referer: str = "") -> dict[str, 
 # site-native sport labels ("NBA", "NCAAF", …) onto them instead of shipping "Nba"/"Ncaaf".
 APP_CATEGORIES = {
     "NBA": "Basketball", "WNBA": "Basketball", "NFL": "American Football",
-    "NCAAF": "American Football", "NCAA": "American Football", "NHL": "Ice Hockey",
+    # Bare "NCAA" stays "Ncaa": football or basketball is decided in feed_v2 (scoreboard or score).
+    "NCAAF": "American Football", "NHL": "Ice Hockey",
     "MLB": "Baseball", "UFC": "Fighting", "MMA": "Fighting", "BOXING": "Fighting",
     "WWE": "Wrestling", "F1": "Motorsports", "MOTOGP": "Motorsports",
     "SOCCER": "Football", "FOOTBALL": "Football", "TENNIS": "Tennis",

@@ -1,0 +1,67 @@
+{
+  "_comment": "Admin hooks for the live events feed. distill_events.py copies policy, config and sites into events.json; the apps follow them. Edit here, not in app code.",
+  "sites": {
+    "ppv": { "name": "PPV.st", "home": "https://ppv.st/", "providers": ["PPV"] },
+    "streamcorner": {
+      "name": "StreamCorner",
+      "home": "https://streamcorner.cloud/",
+      "providers": ["EXTRA", "ALPHA", "BETA", "CHARLIE", "ADMIN", "CHANNELS", "NBA", "NFL", "001", "NATIONS", "UEFA"]
+    },
+    "isportsurge": { "name": "iSportsurge", "home": "https://isportsurge.net/", "providers": ["ISPORTSURGE"] },
+    "buffstreams": { "name": "Buffstreams", "home": "https://buffstreams.plus/", "providers": ["BUFFSTREAMS"] },
+    "totalsportek": { "name": "Totalsportek", "home": "https://totalsporteki.com/", "providers": ["TOTALSPORTEKI"] },
+    "roxiestreams": { "name": "Roxiestreams", "home": "https://roxiestreams.cc/", "providers": ["ROXIESTREAMS"] }
+  },
+  "policy": {
+    "sport_groups": [
+      { "name": "NFL", "icon": "sports_football", "sports": ["american_football"] },
+      { "name": "College Football", "icon": "sports_football", "sports": ["american_football"] },
+      { "name": "NBA", "icon": "sports_basketball", "sports": ["basketball"] },
+      { "name": "WNBA", "icon": "sports_basketball", "sports": ["basketball"] },
+      { "name": "College Basketball", "icon": "sports_basketball", "sports": ["basketball"] },
+      { "name": "MLB", "icon": "sports_baseball", "sports": ["baseball"] },
+      { "name": "NHL", "icon": "sports_hockey", "sports": ["ice_hockey"] },
+      { "name": "Soccer", "icon": "sports_soccer", "sports": ["soccer"] },
+      { "name": "UFC / MMA", "icon": "sports_mma", "sports": ["mma"] },
+      { "name": "Boxing", "icon": "sports_mma", "sports": ["boxing"] },
+      { "name": "Wrestling", "icon": "boxing_ring", "sports": ["wrestling"] },
+      { "name": "Motorsports", "icon": "sports_motorsports", "sports": ["motorsport"] },
+      { "name": "Golf", "icon": "sports_golf", "sports": ["golf"] },
+      { "name": "Tennis", "icon": "sports_tennis", "sports": ["tennis"] },
+      { "name": "More Sports", "icon": "sports", "sports": [] }
+    ],
+    "health": {
+      "fail_omit": 3,
+      "fail_total_disable": 8,
+      "quarantine_streak": 3,
+      "quarantine_hours": [6, 12, 24, 72],
+      "fail_memory_hours": 24
+    },
+    "weak_source": { "min_sources": 3, "min_height": 720 },
+    "status": { "ended_grace_sec": 1800 },
+    "score_refresh_sec": 60
+  },
+  "config": {
+    "sites": {
+      "ppv": { "enabled": true },
+      "streamcorner": { "enabled": true },
+      "isportsurge": { "enabled": true },
+      "buffstreams": { "enabled": true },
+      "totalsportek": { "enabled": true },
+      "roxiestreams": { "enabled": true }
+    },
+    "features": {
+      "live_sports": true,
+      "scores": true,
+      "auto_failover": true,
+      "auto_upgrade": true,
+      "native_player": true
+    },
+    "groups_hidden": [],
+    "devices": {},
+    "apps": {
+      "tv": { "min_version_code": 0 },
+      "slang": { "min_version": "" }
+    }
+  }
+}
