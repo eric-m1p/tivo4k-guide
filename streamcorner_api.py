@@ -31,7 +31,10 @@ from typing import Any
 
 BASE = "https://streamcorner.cloud"
 MANIFEST_URL = BASE + "/manifest.json"
-WORKER_ASSET = "Cp8qs7nj.js"  # content-hashed; override with --worker-asset
+# Both change on every site deploy; discover_worker_config() reads the live values
+# from the site's bundles and these are only the fallback (last seen 2026-11-21).
+WORKER_ASSET = "D0S4sqyM.js"  # content-hashed; override with --worker-asset
+SIG_FIELD = "_feed142d07eaabb2e6d6e29f"  # signature key the worker checks on every message
 
 # Hosts seen serving /corner successfully. The app itself shuffles five per call;
 # several public origins are frequently down, so give the worker a wide choice.
@@ -60,7 +63,64 @@ HOSTS = [
     "data.minjikim444.workers.dev",
     "data.leehyein444.workers.dev",
     "data.daniellemarsh444.workers.dev",
+    "data.jccldjshj8sw.workers.dev",
 ]
+
+
+def discover_worker_config(max_files: int = 40, timeout: int = 20) -> dict:
+    """Read the live site's bundles for the worker asset, signature field and hosts.
+
+    Returns {"asset", "sig_field", "hosts"} with whatever was found ({} on failure),
+    so a redeploy that renames the worker does not silently zero every provider.
+    """
+    import urllib.request
+
+    def get(url: str) -> str:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            ctype = resp.headers.get("Content-Type", "")
+            body = resp.read().decode("utf-8", "replace")
+        return body if ("javascript" in ctype or url.endswith("/")) else ""
+
+    found: dict = {}
+    try:
+        queue = list(dict.fromkeys(re.findall(r"/assets/([A-Za-z0-9_-]+\.js)", get(BASE + "/"))))
+    except Exception as exc:  # noqa: BLE001 - discovery is best effort
+        print(f"[streamcorner] worker discovery failed: {exc}", flush=True)
+        return found
+    seen: set[str] = set()
+    hosts: set[str] = set()
+    while queue and len(seen) < max_files:
+        name = queue.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            text = get(f"{BASE}/assets/{name}")
+        except Exception:  # noqa: BLE001
+            continue
+        hosts.update(re.findall(r"data\.[a-z0-9-]+\.workers\.dev", text))
+        if "provider-data" in text and "asset" not in found:
+            m = re.search(r'new URL\("([A-Za-z0-9_-]+\.js)",\s*import\.meta\.url\)', text)
+            sig = re.search(r"\{\.\.\.\w+,(_[0-9a-f]{24}):", text)
+            if m:
+                found["asset"] = m.group(1)
+            if sig:
+                found["sig_field"] = sig.group(1)
+        for ref in re.findall(r'["\'](?:\./)?([A-Za-z0-9_-]{6,}\.js)["\']', text):
+            if ref not in seen:
+                queue.append(ref)
+        if "asset" in found and "sig_field" in found and len(seen) >= 3:
+            break
+    if hosts:
+        found["hosts"] = sorted(hosts)
+    print(
+        "[streamcorner] worker config: "
+        f"asset={found.get('asset', '?')} sig={found.get('sig_field', '?')} "
+        f"hosts={len(found.get('hosts', []))} (scanned {len(seen)} bundles)",
+        flush=True,
+    )
+    return found
 
 # provider id -> field that identifies one item in provider-detail
 ID_FIELD = {
@@ -139,9 +199,17 @@ class Event:
 class WorkerClient:
     """Owns one page and one provider-data worker on streamcorner.cloud."""
 
-    def __init__(self, page, worker_asset: str = WORKER_ASSET):
+    def __init__(
+        self,
+        page,
+        worker_asset: str = WORKER_ASSET,
+        sig_field: str = SIG_FIELD,
+        hosts: list[str] | None = None,
+    ):
         self.page = page
         self.worker_asset = worker_asset
+        self.sig_field = sig_field
+        self.hosts = hosts or HOSTS
         self._seq = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._sig = ""
@@ -188,7 +256,7 @@ class WorkerClient:
         self._seq += 1
         request_id = self._seq
         urls = []
-        for host in random.sample(HOSTS, 5):
+        for host in random.sample(self.hosts, min(5, len(self.hosts))):
             url = f"https://{host}/corner?p={provider}"
             if item_id:
                 url += "&id=" + item_id
@@ -199,7 +267,7 @@ class WorkerClient:
             "requestUrls": urls,
             "providerId": provider,
             "providerName": PROVIDER_NAMES.get(provider, provider.upper()),
-            "_ed23bd83ad9570445752283e": self._sig,
+            self.sig_field: self._sig,
         }
         reply = await self.page.evaluate("p => self.__scCall(p)", payload)
         if not isinstance(reply, dict):
@@ -482,7 +550,10 @@ def _future_label(starts_at: int, now_sec: int) -> str:
 def stream_sources(detail: dict, provider: str) -> list[Source]:
     out: list[Source] = []
     seen: set[str] = set()
-    for entry in detail.get("streams") or []:
+    # Most providers list `streams`; NBA/WNBA split them into `live` and `vods`
+    # (replays, not wanted in a live feed).
+    entries = list(detail.get("streams") or []) + list(detail.get("live") or [])
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         url = str(entry.get("embed_url") or entry.get("url") or "").strip()
@@ -558,11 +629,16 @@ async def fetch_provider(client: WorkerClient, provider: str, detail_limit: int 
 async def fetch_all(
     providers: list[str] | None = None,
     concurrency: int = 4,
-    worker_asset: str = WORKER_ASSET,
+    worker_asset: str | None = None,
 ) -> dict[str, list[Event]]:
+    """Fetch providers; worker_asset=None discovers the live worker config first."""
     from playwright.async_api import async_playwright
 
     providers = providers or LIST_PROVIDERS
+    config = discover_worker_config() if not worker_asset else {}
+    asset = worker_asset or config.get("asset") or WORKER_ASSET
+    sig_field = config.get("sig_field") or SIG_FIELD
+    hosts = config.get("hosts") or HOSTS
     out: dict[str, list[Event]] = {}
 
     async with async_playwright() as p:
@@ -582,7 +658,7 @@ async def fetch_all(
         clients = []
         for _ in range(max(1, concurrency)):
             page = await ctx.new_page()
-            client = WorkerClient(page, worker_asset=worker_asset)
+            client = WorkerClient(page, worker_asset=asset, sig_field=sig_field, hosts=hosts)
             await client.start()
             clients.append(client)
 
@@ -731,13 +807,13 @@ async def _main() -> int:
     ap.add_argument("--out", default="streamcorner_events.json")
     ap.add_argument("--providers", default=",".join(LIST_PROVIDERS))
     ap.add_argument("--concurrency", type=int, default=4)
-    ap.add_argument("--worker-asset", default=WORKER_ASSET)
+    ap.add_argument("--worker-asset", default="", help="override the discovered worker asset")
     ap.add_argument("--detail-limit", type=int, default=0, help="debug: only resolve N details per provider")
     args = ap.parse_args()
 
     providers = [p.strip() for p in args.providers.split(",") if p.strip()]
     print(f"fetching {len(providers)} providers via the StreamCorner worker ...", flush=True)
-    result = await fetch_all(providers, concurrency=args.concurrency, worker_asset=args.worker_asset)
+    result = await fetch_all(providers, concurrency=args.concurrency, worker_asset=args.worker_asset or None)
     events: list[Event] = []
     for rows in result.values():
         events.extend(rows)

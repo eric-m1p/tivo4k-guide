@@ -548,7 +548,7 @@ def merge_streamcorner_feed(
         sc.fetch_all(
             providers=providers,
             concurrency=concurrency,
-            worker_asset=worker_asset or sc.WORKER_ASSET,
+            worker_asset=worker_asset or None,  # None: discover from the live site
         )
     )
     sc_events = [event for rows in result.values() for event in rows]
