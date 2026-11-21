@@ -41,6 +41,10 @@ PROBE_TIMEOUT = 8
 PROBE_BODY_LIMIT = 64 * 1024
 MANIFEST_LIMIT = 96 * 1024
 CANDIDATE_POOL = 16
+# Uncapped mode: every good mirror is published; weak ones (dead now, measured or
+# labelled below 720p, or mostly failing) only fill an event up to this many.
+MIN_SOURCES_PER_EVENT = 3
+LOW_QUALITY_HEIGHT = 720
 DISABLE_STREAK = 3
 DISABLE_TOTAL = 8
 QUARANTINE_HOURS = (6, 12, 24, 72)
@@ -360,6 +364,20 @@ def _selection_key(
         -min(ok_count, 50),
         index,
     )
+
+
+def is_weak_source(src: dict, entry: dict, probe_ok: bool | None) -> bool:
+    """A mirror only worth publishing when an event has little else."""
+    if probe_ok is False:
+        return True
+    height = int(src.get("height") or entry.get("height") or 0)
+    if 0 < height < LOW_QUALITY_HEIGHT:
+        return True
+    if height <= 0 and quality_rank(src) == 3:
+        return True
+    fail = int(entry.get("fail") or 0)
+    ok_count = int(entry.get("ok") or 0)
+    return fail >= 3 and fail > ok_count
 
 
 def _select_best_sources(candidates: list[dict], limit: int | None) -> list[dict]:
@@ -1512,6 +1530,8 @@ def apply_source_health(
 
     trimmed = 0
     empty = 0
+    weak_dropped = 0
+    weak_kept = 0
     selected_sources = 0
     multi_host_events = 0
     for index, event in enumerate(events):
@@ -1552,13 +1572,19 @@ def apply_source_health(
                 "src": src,
                 "host": host_of(url),
                 "ok": probe_ok,
+                "weak": is_weak_source(src, entry, probe_ok),
                 "key": _selection_key(
                     src, entry, detailed.get(url), probe_ok, host_stats, state, index
                 ),
             })
         if limit is None:
-            # No cap: a mirror that just failed has nothing to offer the stack.
-            candidates = [c for c in candidates if c["ok"] is not False]
+            # No count cap, but weak mirrors only fill thin events.
+            good = [c for c in candidates if not c["weak"]]
+            weak = sorted((c for c in candidates if c["weak"]), key=lambda c: c["key"])
+            keep = max(0, MIN_SOURCES_PER_EVENT - len(good))
+            weak_dropped += max(0, len(weak) - keep)
+            weak_kept += min(len(weak), keep)
+            candidates = good + weak[:keep]
         final = _select_best_sources(candidates, limit)
         if len(final) != len(source_list):
             trimmed += 1
@@ -1585,6 +1611,8 @@ def apply_source_health(
         ),
         "manifest_failed": manifest_failures,
         "trimmed_events": trimmed,
+        "weak_dropped": weak_dropped,
+        "weak_kept": weak_kept,
         "empty_events": empty,
         "selected_sources": selected_sources,
         "multi_host_events": multi_host_events,
@@ -1612,6 +1640,7 @@ def apply_source_health(
           f"browser={stats['quality_browser_measured']}/{stats['quality_probed']} "
           f"manifests={stats['quality_manifests']} manifest_dead={stats['manifest_failed']} "
           f"trimmed={trimmed} empty={empty} selected={selected_sources} "
+          f"weak_dropped={weak_dropped} weak_kept={weak_kept} "
           f"multi_host={multi_host_events} cap={max_sources} "
           f"blocked_state={stats['blocked']} manual={stats['manual_url_blocks']}u/{stats['manual_host_blocks']}h",
         flush=True,
