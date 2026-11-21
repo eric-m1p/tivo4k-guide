@@ -35,8 +35,19 @@
       "fail_total_disable": 8,
       "quarantine_streak": 3,
       "quarantine_hours": [6, 12, 24, 72],
-      "fail_memory_hours": 24
+      "quarantine_vantages": 2,
+      "fail_memory_hours": 24,
+      "app_weight": 3
     },
+    "probe": {
+      "budget_per_hour": 1200,
+      "live_before_min": 30,
+      "live_after_min": 15,
+      "top_n": 4,
+      "always_on_every_hours": 6,
+      "playback": { "enabled": true, "budget_per_run": 40, "timeout_sec": 14, "recheck_min": 90 }
+    },
+    "canary": { "min_yield_ratio": 0.2, "baseline_runs": 48, "bad_runs": 3, "alert": "github_issue" },
     "weak_source": { "min_sources": 3, "min_height": 720 },
     "status": { "ended_grace_sec": 1800 },
     "score_refresh_sec": 60

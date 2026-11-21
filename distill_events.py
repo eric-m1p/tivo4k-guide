@@ -14,6 +14,7 @@ empty; later runs fill in `streams[].embed_url` when the provider publishes it.
 """
 
 import argparse
+import functools
 import asyncio
 import datetime
 import json
@@ -666,11 +667,11 @@ def dedupe_event_sources(events: list[dict]) -> list[dict]:
     return events
 
 
-def save_json(events: list[dict], now_sec: int, json_path: str) -> None:
+def save_json(events: list[dict], now_sec: int, json_path: str, policy: dict | None = None) -> None:
     """Write the v2 feed (events + sites/policy/config). Refuses to publish an invalid feed."""
     import feed_v2
 
-    payload = feed_v2.finalize(events, now_sec)
+    payload = feed_v2.finalize(events, now_sec, policy)
     errors = feed_v2.validate(payload)
     if errors:
         for err in errors[:20]:
@@ -758,20 +759,20 @@ def main() -> int:
         default=True,
         help="match ESPN scoreboards for scores, team logos and start times (default: on)",
     )
-    parser.add_argument("--probe-budget", type=int, default=3000, help="max unique URLs probed per run")
+    parser.add_argument("--probe-budget", type=int, default=3000, help="URL cap for the legacy --probe-all path (the scheduler uses policy.probe.budget_per_hour)")
     parser.add_argument("--probe-workers", type=int, default=32)
     parser.add_argument(
         "--quality-budget",
         type=int,
-        default=120,
-        help="max live URLs measured with a headless browser per run (0 = off)",
+        default=None,
+        help="playback checks per run (0 = off; default: policy.probe.playback)",
     )
     parser.add_argument("--quality-workers", type=int, default=4)
-    parser.add_argument("--quality-timeout", type=int, default=10)
+    parser.add_argument("--quality-timeout", type=int, default=None, help="default: policy.probe.playback.timeout_sec")
     parser.add_argument(
         "--probe-all",
         action="store_true",
-        help="probe every unique source, not just the top candidates per event",
+        help="legacy: probe every source up to --probe-budget instead of the policy.probe scheduler",
     )
     parser.add_argument(
         "--source-health",
@@ -793,20 +794,27 @@ def main() -> int:
             raise
         print(f"Warning: PPV feed failed ({exc}); continuing with StreamCorner only", file=sys.stderr)
         events = []
+    ppv_rows = len(events)
 
+    sc_counts = None
     if args.streamcorner:
         providers = [p.strip() for p in args.sc_providers.split(",") if p.strip()] or None
-        events, _ = merge_streamcorner_feed(
-            events,
-            now_sec,
-            providers=providers,
-            concurrency=args.sc_concurrency,
-            worker_asset=args.sc_worker_asset or None,
-        )
+        try:
+            events, sc_counts = merge_streamcorner_feed(
+                events,
+                now_sec,
+                providers=providers,
+                concurrency=args.sc_concurrency,
+                worker_asset=args.sc_worker_asset or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - a broken site must not stop the feed; the canary sees 0 rows
+            print(f"Warning: StreamCorner failed ({exc}); continuing without it", file=sys.stderr)
+            sc_counts = {}
 
+    site_counts = None
     if args.sites:
         sites = [s.strip() for s in args.sites.split(",") if s.strip()]
-        events, _ = merge_site_feed(events, now_sec, sites, limit=args.sites_limit)
+        events, site_counts = merge_site_feed(events, now_sec, sites, limit=args.sites_limit)
 
     events = dedupe_event_sources(events)
 
@@ -827,9 +835,26 @@ def main() -> int:
         print("Error: upstream feed returned 0 active events", file=sys.stderr)
         return 1
 
+    import feed_v2
+    policy = feed_v2.load_policy()
+    probe_policy = policy["policy"].get("probe") or {}
+    playback_policy = probe_policy.get("playback") or {}
+    origin_site = feed_v2.site_index(policy)
+    site_of: dict[str, str] = {}
+    homes: dict[str, str] = {}
+    for event in events:
+        for src in event.get("sources") or []:
+            url = str(src.get("url") or "").strip()
+            origin = str(src.get("origin") or "").upper()
+            site = origin_site.get(origin, origin.lower())
+            site_of.setdefault(url, site)
+            home = (policy["sites"].get(site) or {}).get("home") or src.get("referer") or ""
+            homes.setdefault(url, home)
+
+    do_probe = args.probe_sources and not args.dry_run
     try:
         import source_health
-        if args.probe_sources and not args.dry_run:
+        if do_probe:
             try:
                 tstats = source_health.ingest_telemetry_from_git(args.source_health, base_dir)
                 if tstats.get("rows", 0) > 0:
@@ -839,24 +864,57 @@ def main() -> int:
                     )
             except Exception as exc:
                 print(f"Warning: telemetry ingest skipped ({exc})", file=sys.stderr)
-        source_health.apply_source_health(
+        planner = None
+        if not args.probe_all:
+            import probe_scheduler
+            planner = functools.partial(probe_scheduler.plan_probes, policy=probe_policy)
+        quality_budget = args.quality_budget
+        if quality_budget is None:
+            enabled = playback_policy.get("enabled", True)
+            quality_budget = int(playback_policy.get("budget_per_run", 40)) if enabled else 0
+        health_stats = source_health.apply_source_health(
             events,
             args.source_health,
             max_sources=max(0, args.max_sources),
             probe_budget=max(0, args.probe_budget),
-            do_probe=args.probe_sources and not args.dry_run,
+            do_probe=do_probe,
             workers=max(1, args.probe_workers),
             blocklist_path=args.source_blocklist,
             probe_all=args.probe_all,
-            quality_budget=max(0, args.quality_budget),
+            quality_budget=max(0, quality_budget),
             quality_workers=max(1, args.quality_workers),
-            quality_timeout=max(2, args.quality_timeout),
+            quality_timeout=max(2, args.quality_timeout or int(playback_policy.get("timeout_sec", 14))),
+            planner=planner,
+            homes=homes,
+            site_of=site_of,
+            playback_recheck_min=int(playback_policy.get("recheck_min", 90)),
         )
     except Exception as exc:
         print(f"Warning: source health pass failed ({exc}); publishing untrimmed sources", file=sys.stderr)
+        health_stats = {}
 
     if not args.dry_run:
-        save_json(events, now_sec, args.json)
+        try:
+            import site_canary
+            import source_health
+            canary_policy = policy["policy"].get("canary") or {}
+            state = source_health.load_state(args.source_health)
+            rows = site_canary.site_rows(policy, ppv_rows, sc_counts, site_counts)
+            alerts = site_canary.update(
+                state, rows, health_stats.get("site_probe") or {},
+                site_canary.app_by_site(state, site_of, now_sec), now_sec, canary_policy,
+            )
+            source_health.save_state(args.source_health, state, state.get("stats") or {})
+            site_canary.overlay(policy, state)
+            site_canary.send_alerts(
+                alerts, state, canary_policy,
+                {k: v.get("name", k) for k, v in policy["sites"].items()},
+            )
+        except Exception as exc:  # noqa: BLE001 - the canary must never block the feed
+            print(f"Warning: site canary skipped ({exc})", file=sys.stderr)
+
+    if not args.dry_run:
+        save_json(events, now_sec, args.json, policy)
     print_summary(events, args.status, args.sport)
     return 0
 

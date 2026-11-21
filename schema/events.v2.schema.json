@@ -140,10 +140,45 @@
           "required": ["fail_omit", "quarantine_streak", "quarantine_hours"],
           "properties": {
             "fail_omit": { "type": "integer", "minimum": 1, "description": "Playback failures before a source is omitted/downgraded." },
-            "fail_total_disable": { "type": "integer", "minimum": 1 },
-            "quarantine_streak": { "type": "integer", "minimum": 1, "description": "Consecutive probe failures before quarantine." },
+            "fail_total_disable": { "type": "integer", "minimum": 1, "description": "Unused since source health v2 (quarantine follows quarantine_streak / quarantine_vantages); kept so v2 readers stay valid." },
+            "quarantine_streak": { "type": "integer", "minimum": 1, "description": "Consecutive failures from one vantage point (the probe runner or one device) before quarantine." },
             "quarantine_hours": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
-            "fail_memory_hours": { "type": "integer", "minimum": 1, "description": "How long an on-device failure counts against a source." }
+            "quarantine_vantages": { "type": "integer", "minimum": 1, "description": "Quarantine when this many vantage points each failed within fail_memory_hours." },
+            "fail_memory_hours": { "type": "integer", "minimum": 1, "description": "How long an on-device failure counts against a source." },
+            "app_weight": { "type": "number", "minimum": 0, "description": "Weight of app playback results against probe results (probes weigh 1)." }
+          },
+          "additionalProperties": false
+        },
+        "probe": {
+          "type": "object",
+          "description": "Budgeted source health scheduler (pipeline only; apps ignore it).",
+          "properties": {
+            "budget_per_hour": { "type": "integer", "minimum": 0, "description": "Page probes per hour across all runs." },
+            "live_before_min": { "type": "integer", "minimum": 0, "description": "Probe an event from this many minutes before its start." },
+            "live_after_min": { "type": "integer", "minimum": 0, "description": "…until this many minutes after its end." },
+            "top_n": { "type": "integer", "minimum": 1, "description": "Sources probed per in-window event each run." },
+            "always_on_every_hours": { "type": "integer", "minimum": 1, "description": "A 24/7 source is probed at most once in this many hours." },
+            "playback": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "budget_per_run": { "type": "integer", "minimum": 0 },
+                "timeout_sec": { "type": "integer", "minimum": 2 },
+                "recheck_min": { "type": "integer", "minimum": 0, "description": "Skip a source whose playback was verified this recently." }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "canary": {
+          "type": "object",
+          "description": "Per-site yield canary (pipeline only).",
+          "properties": {
+            "min_yield_ratio": { "type": "number", "minimum": 0, "maximum": 1, "description": "A run below this share of the site's usual row count is a bad run." },
+            "baseline_runs": { "type": "integer", "minimum": 1, "description": "Runs kept for the usual row count." },
+            "bad_runs": { "type": "integer", "minimum": 1, "description": "Consecutive bad runs before the site is disabled and an alert goes out." },
+            "alert": { "type": "string", "enum": ["github_issue", "none"] }
           },
           "additionalProperties": false
         },
@@ -182,7 +217,12 @@
           "type": "object",
           "additionalProperties": {
             "type": "object", "required": ["enabled"],
-            "properties": { "enabled": { "type": "boolean" } },
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "auto": { "type": "boolean", "description": "Set by the site canary, not by hand." },
+              "reason": { "type": "string" },
+              "since": { "type": "integer", "minimum": 0 }
+            },
             "additionalProperties": false
           }
         },

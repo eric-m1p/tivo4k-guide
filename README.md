@@ -43,6 +43,33 @@ adds fields, so v1 readers keep working. The pipeline decides; the apps render:
   `python3 feed_v2.py validate [path-or-url]` checks one by hand;
   `python3 -m unittest test_feed_v2` runs the rules' tests (CI runs both).
 
+#### Source health v2
+
+Every number below lives in `feed_policy.json` (`policy.health`, `policy.probe`,
+`policy.canary`); `python3 -m unittest test_source_health_v2` covers the rules.
+
+- **Scheduler** (`probe_scheduler.py`): a page-probe budget per hour, scaled to the
+  time since the last run. Events from 30 min before start to 15 min after end get
+  their top 4 sources probed every run; 24/7 sources are a rotating sample (each at
+  most every 6 h); leftover budget goes to deeper in-window sources, then to
+  upcoming events. Unprobed sources rank on their history.
+- **Two levels**: a quick page check, then a playback check in headless Chrome
+  (`probe_playback`): the embed loads in an iframe on a page served from the site's
+  own origin, gets a click and a muted `play()`, and passes only if video frames
+  advance. Height = decoded height or the master playlist's top rendition.
+- **Scoring** (`health_score`): app playback results from the telemetry branch
+  weigh most (`app_weight`), then playback checks, then page checks. Quarantine
+  needs failures from 2 vantage points (the runner, each device) within
+  `fail_memory_hours`, or 3 in a row from one. A 401/403/429/451 from the runner is
+  "blocked from server" and never counts on its own. An app success lifts a
+  quarantine. Feed order follows the score; weak sources only fill thin events.
+- **Site canary** (`site_canary.py`): per-site rows, probe and playback results and
+  last success go to `source_health.json` → `sites`. Zero rows on a site that is
+  normally full for 3 runs, or nothing playing for the runner *and* the apps, sets
+  the feed's `config.sites.<id>` to `enabled: false, auto: true` and opens a
+  `Site down` issue (label `site-canary`); the first good run reverts both. Low
+  yield, or the runner alone failing playback, alerts without disabling.
+
 ### TV Guide (`guide.xml.gz`)
 
 A GitHub Actions job (`.github/workflows/guide.yml`) rebuilds the guide every

@@ -48,11 +48,25 @@ LOW_QUALITY_HEIGHT = 720
 DISABLE_STREAK = 3
 DISABLE_TOTAL = 8
 QUARANTINE_HOURS = (6, 12, 24, 72)
+# Source health v2: a quarantine needs DISABLE_STREAK failures in a row from one
+# vantage point (the CI runner, or one device) or failures from QUARANTINE_VANTAGES
+# vantage points within FAIL_MEMORY_HOURS. App playback outweighs probes.
+QUARANTINE_VANTAGES = 2
+FAIL_MEMORY_HOURS = 24
+FAIL_OMIT = 3
+APP_WEIGHT = 3.0
+PAGE_WEIGHT = 0.5
+PLAYBACK_WEIGHT = 1.0
+CI_VANTAGE = "ci"
+# The runner was refused, which says nothing about viewers: never a failure on
+# its own, only alongside a recent app failure.
+SERVER_BLOCKED_STATUSES = {"401", "403", "407", "429", "451", "manifest-403"}
 
 
 def _load_policy_thresholds() -> None:
     """Thresholds ship in feed_policy.json (the feed's policy block); constants above are fallbacks."""
     global MIN_SOURCES_PER_EVENT, LOW_QUALITY_HEIGHT, DISABLE_STREAK, DISABLE_TOTAL, QUARANTINE_HOURS
+    global QUARANTINE_VANTAGES, FAIL_MEMORY_HOURS, FAIL_OMIT, APP_WEIGHT
     here = os.path.dirname(os.path.abspath(__file__))
     policy = None
     # guide-repo keeps the file next to this module; the iptv/ copy reads guide-repo's.
@@ -71,6 +85,10 @@ def _load_policy_thresholds() -> None:
     DISABLE_STREAK = int(health.get("quarantine_streak", DISABLE_STREAK))
     DISABLE_TOTAL = int(health.get("fail_total_disable", DISABLE_TOTAL))
     QUARANTINE_HOURS = tuple(int(h) for h in health.get("quarantine_hours") or QUARANTINE_HOURS)
+    QUARANTINE_VANTAGES = int(health.get("quarantine_vantages", QUARANTINE_VANTAGES))
+    FAIL_MEMORY_HOURS = int(health.get("fail_memory_hours", FAIL_MEMORY_HOURS))
+    FAIL_OMIT = int(health.get("fail_omit", FAIL_OMIT))
+    APP_WEIGHT = float(health.get("app_weight", APP_WEIGHT))
 
 
 _load_policy_thresholds()
@@ -84,9 +102,9 @@ PERMANENT_QUARANTINES = 2
 # players build their manifest at runtime, so a real browser is the only reliable
 # way to measure height/bitrate from CI. The budget keeps a full feed run inside
 # the workflow's time limit; URLs already measured are remembered in state.
-QUALITY_BROWSER_BUDGET = 120
+QUALITY_BROWSER_BUDGET = 40
 QUALITY_BROWSER_WORKERS = 4
-QUALITY_BROWSER_TIMEOUT = 10
+QUALITY_BROWSER_TIMEOUT = 14
 QUALITY_BROWSER_SETTLE_MS = 700
 
 QUALITY_TOKEN_RE = re.compile(
@@ -107,6 +125,16 @@ PROBE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://streamcorner.cloud/",
 }
+
+
+def _iso_epoch(ts: str) -> int:
+    """'2026-11-21T06:38:51.399Z' -> epoch seconds (0 if unparseable)."""
+    import datetime
+
+    try:
+        return int(datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return 0
 
 
 def _now() -> int:
@@ -154,6 +182,12 @@ def _migrate_entry(entry: dict) -> None:
         entry.setdefault("blocked_reason", f"failed {fail}x across {entry['quarantines']} quarantines")
     if entry.get("blocked"):
         entry["disabled_until"] = 0
+    if "vantages" not in entry and int(entry.get("streak") or 0) > 0:
+        entry["vantages"] = {CI_VANTAGE: {
+            "streak": int(entry.get("streak") or 0),
+            "last_fail": int(entry.get("last_fail") or 0),
+            "last_ok": int(entry.get("last_ok") or 0),
+        }}
 
 
 def _entry(state: dict, url: str) -> dict:
@@ -204,6 +238,7 @@ def save_state(path: str | os.PathLike, state: dict, stats: dict) -> None:
             entries.pop(url, None)
         elif (int(entry.get("height") or 0) <= 0
               and int(entry.get("fail") or 0) <= 0
+              and not any(int(entry.get(k) or 0) > 0 for k in ("app_ok", "app_fail", "play_ok", "play_fail"))
               and int(entry.get("disabled_until") or 0) <= now):
             entries.pop(url, None)
     # Hard cap keeps the committed JSON small even after months of churn.
@@ -317,18 +352,6 @@ def _host_probe_stats(detailed: dict[str, dict]) -> dict[str, dict]:
     return stats
 
 
-def _host_reliability(state: dict, host: str, run_stats: dict[str, dict]) -> float:
-    run = run_stats.get(host) or {}
-    run_rate = float(run.get("rate", 0.5))
-    telemetry = (state.get("hosts") or {}).get(host)
-    if isinstance(telemetry, dict):
-        ok = int(telemetry.get("ok") or 0)
-        fail = int(telemetry.get("fail") or 0)
-        telemetry_rate = (ok + 1) / (ok + fail + 2)
-        return round(run_rate * 0.7 + telemetry_rate * 0.3, 3)
-    return round(run_rate, 3)
-
-
 def _quality_score(src: dict, height: int) -> int:
     """0-5 quality score: measured height, with a one-tier penalty for guesses.
 
@@ -372,22 +395,20 @@ def _selection_key(
         bitrate = int(entry.get("bitrate") or 0)
     fps = float(entry.get("fps") or 0.0)
     latency = int((probe_info or {}).get("latency_ms") or 0) if probe_ok else 10**9
-    reliability = _host_reliability(state, host, host_stats)
-    streak = int(entry.get("streak") or 0)
-    fail = int(entry.get("fail") or 0)
-    ok_count = int(entry.get("ok") or 0)
-    health_penalty = min(streak, 6) * 12 + min(fail, 12) * 3 - min(ok_count, 30)
+    score = health_score(entry, state, url)
+    if host_stats.get(host):
+        # This run's host pass rate nudges sources with no history of their own.
+        score = round(score * 0.85 + float(host_stats[host].get("rate", 0.5)) * 0.15, 4)
     return (
         0 if probe_ok is True else (1 if probe_ok is None else 2),
+        -min(int(score * 3), 2),  # bad / unknown / good: playback history outranks labels
         -_quality_score(src, height),
         -min(height, 4320),
         0 if fps >= 48.0 else 1,
         0 if (src.get("verified") or entry.get("verified")) else 1,
-        -reliability,
+        -score,
         -min(bitrate, 50_000_000),
         latency,
-        health_penalty,
-        -min(ok_count, 50),
         index,
     )
 
@@ -401,9 +422,15 @@ def is_weak_source(src: dict, entry: dict, probe_ok: bool | None) -> bool:
         return True
     if height <= 0 and quality_rank(src) == 3:
         return True
+    app_fail = int(entry.get("app_fail") or 0)
+    app_ok = int(entry.get("app_ok") or 0)
+    if app_fail >= FAIL_OMIT and app_fail > app_ok:
+        return True
+    if int(entry.get("play_fail") or 0) >= 3 and not int(entry.get("play_ok") or 0) and not app_ok:
+        return True
     fail = int(entry.get("fail") or 0)
     ok_count = int(entry.get("ok") or 0)
-    return fail >= 3 and fail > ok_count
+    return fail >= 3 and fail > ok_count and not app_ok
 
 
 def _select_best_sources(candidates: list[dict], limit: int | None) -> list[dict]:
@@ -1064,7 +1091,9 @@ def _browser_launch(playwright):
     """Launch a real browser. Use installed Chrome first, then Playwright's build."""
     for options in ({"channel": "chrome"}, {}):
         try:
-            return playwright.chromium.launch(headless=True, **options)
+            return playwright.chromium.launch(
+                headless=True, args=["--autoplay-policy=no-user-gesture-required"], **options
+            )
         except Exception:
             continue
     return None
@@ -1108,56 +1137,106 @@ def _height_from_stream_type(player: dict) -> int:
     return 0
 
 
-def _browser_probe_one(ctx, url: str, timeout: int) -> dict:
-    """Load an embed inside an iframe (so anti-embed checks pass) and measure quality."""
+_VIDEO_STATE_JS = (
+    "() => [...document.querySelectorAll('video')].map(v => [v.videoHeight || 0,"
+    " v.currentTime || 0, v.readyState || 0,"
+    " v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : 0])"
+)
+_FORCE_PLAY_JS = (
+    "() => document.querySelectorAll('video').forEach(v => {"
+    " v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); })"
+)
+PLAYBACK_MIN_FRAMES = 12
+PLAYBACK_MIN_SECONDS = 1.0
+
+
+def _wrapper_url(url: str, home: str) -> str:
+    """The probe page lives on the site's own origin, so referrer and ancestor checks pass."""
+    from urllib.parse import urlparse
+
+    base = urlparse(home or "")
+    if base.scheme != "https" or not base.hostname:
+        base = urlparse(url)
+    return f"https://{base.netloc}/__slang_probe__"
+
+
+def _browser_probe_one(ctx, url: str, timeout: int, home: str = "") -> dict:
+    """Playback check: does the embed actually decode frames, and at what height?
+
+    The embed is loaded in an iframe on a page served (via request routing) from
+    the site's own origin, so anti-embed and referrer checks see the site they
+    expect. Players that wait for a gesture get a click and a muted play().
+    `playing` means video frames advanced; `height` is the best of the decoded
+    height and the master playlist's top rendition (ABR starts low).
+    """
+    wrapper = _wrapper_url(url, home)
     page = ctx.new_page()
     manifests: list[str] = []
-    page.on(
-        "request",
-        lambda request: manifests.append(request.url)
-        if _looks_like_manifest(request.url) else None,
-    )
-    height = 0
-    bitrate = 0
-    manifest = ""
-    try:
-        page.set_content(
+
+    def on_response(response) -> None:
+        try:
+            ctype = (response.headers.get("content-type") or "").lower()
+        except Exception:
+            ctype = ""
+        if _looks_like_manifest(response.url) or "mpegurl" in ctype or "dash+xml" in ctype:
+            if response.url not in manifests and len(manifests) < 6:
+                manifests.append(response.url)
+
+    page.on("response", on_response)
+    page.route(wrapper, lambda route: route.fulfill(
+        status=200,
+        content_type="text/html",
+        body=(
             '<html><body style="margin:0;background:#000">'
             f'<iframe src="{html.escape(url)}" style="width:1280px;height:720px;border:0" '
-            'allow="autoplay; fullscreen; picture-in-picture"></iframe></body></html>'
-        )
-        deadline = time.monotonic() + max(2, timeout)
+            'allow="autoplay; fullscreen; encrypted-media; picture-in-picture"></iframe></body></html>'
+        ),
+    ))
+    observed_height = 0
+    playing = False
+    saw_video = False
+    first: dict[int, tuple[float, int]] = {}
+    try:
+        page.goto(wrapper, wait_until="domcontentloaded", timeout=max(5, timeout) * 1000)
+        started = time.monotonic()
+        deadline = started + max(4, timeout)
+        nudges = (2.5, 6.0)
+        nudged = 0
+        playing_since = 0.0
         while time.monotonic() < deadline:
             page.wait_for_timeout(QUALITY_BROWSER_SETTLE_MS)
-            for frame in page.frames:
-                if frame is page.main_frame:
+            for index, frame in enumerate(page.frames):
+                try:
+                    videos = frame.evaluate(_VIDEO_STATE_JS)
+                except Exception:
                     continue
-                try:
-                    config = frame.evaluate("() => window.SecKeyPlayerConfig || null")
-                except Exception:
-                    config = None
-                if isinstance(config, dict):
-                    for player in config.values():
-                        if not isinstance(player, dict):
-                            continue
-                        candidate = _height_from_stream_type(player)
-                        if candidate:
-                            height = max(height, candidate)
-                        source = str(player.get("urlSource") or "")
-                        if source and _looks_like_manifest(source) and not manifest:
-                            manifest = source[:400]
-                try:
-                    dimensions = frame.evaluate(
-                        "() => { const v = document.querySelector('video');"
-                        " return v && v.videoWidth ? [v.videoWidth, v.videoHeight] : null; }"
+                for vi, (height, current, ready, frames) in enumerate(videos or []):
+                    saw_video = True
+                    key = index * 16 + vi
+                    base = first.setdefault(key, (float(current or 0), int(frames or 0)))
+                    advanced = (
+                        int(frames or 0) - base[1] >= PLAYBACK_MIN_FRAMES
+                        or (float(current or 0) - base[0] >= PLAYBACK_MIN_SECONDS and int(ready or 0) >= 2)
                     )
+                    if advanced:
+                        if not playing:
+                            playing_since = time.monotonic()
+                        playing = True
+                        observed_height = max(observed_height, int(height or 0))
+            if playing and time.monotonic() - playing_since >= 2.5:
+                break  # let ABR step up once, then stop
+            elapsed = time.monotonic() - started
+            if not playing and nudged < len(nudges) and elapsed >= nudges[nudged]:
+                nudged += 1
+                try:
+                    page.mouse.click(640, 360)
                 except Exception:
-                    dimensions = None
-                if isinstance(dimensions, list) and len(dimensions) == 2:
-                    height = max(height, int(dimensions[1] or 0))
-            if manifests or height:
-                page.wait_for_timeout(400)
-                break
+                    pass
+                for frame in page.frames:
+                    try:
+                        frame.evaluate(_FORCE_PLAY_JS)
+                    except Exception:
+                        pass
     except Exception:
         pass
     finally:
@@ -1166,26 +1245,32 @@ def _browser_probe_one(ctx, url: str, timeout: int) -> dict:
         except Exception:
             pass
 
-    for candidate in manifests:
+    manifest = ""
+    manifest_height = 0
+    bitrate = 0
+    for candidate in manifests[:3]:
         body = _browser_fetch(ctx, candidate, url, timeout)
         if not body:
             continue
         h, b = _quality_from_manifest(body)
-        if h > 0:
-            height, bitrate, manifest = h, b, candidate
-            break
         if not manifest:
-            manifest = candidate[:400]
+            manifest = candidate
+        if h > manifest_height:
+            manifest_height, bitrate, manifest = h, b, candidate
+    # A master playlist's top rendition only counts when something actually played.
+    height = max(observed_height, manifest_height) if playing else 0
     return {
+        "playing": playing,
+        "status": "playing" if playing else ("no-playback" if saw_video else "no-video"),
         "height": height,
-        "bitrate": bitrate,
+        "bitrate": bitrate if playing else 0,
         "manifest": manifest[:400],
-        "verified": height > 0,
+        "verified": playing and height > 0,
         "quality": _quality_label(height),
     }
 
 
-def _browser_worker(chunk: list[str], timeout: int) -> dict[str, dict]:
+def _browser_worker(chunk: list[tuple[str, str]], timeout: int) -> dict[str, dict]:
     results: dict[str, dict] = {}
     if not chunk:
         return results
@@ -1199,14 +1284,18 @@ def _browser_worker(chunk: list[str], timeout: int) -> dict[str, dict]:
             if browser is None:
                 return results
             try:
-                for url in chunk:
+                for url, home in chunk:
                     ctx = browser.new_context(
                         user_agent=PROBE_HEADERS["User-Agent"],
                         viewport={"width": 1280, "height": 720},
                         locale="en-US",
                     )
+                    # Pop-unders opened by the click are ads; close them at once.
+                    ctx.on("page", lambda extra: extra.close() if extra.opener() else None)
                     try:
-                        results[url] = _browser_probe_one(ctx, url, timeout)
+                        results[url] = _browser_probe_one(ctx, url, timeout, home)
+                    except Exception:
+                        pass
                     finally:
                         ctx.close()
             finally:
@@ -1216,21 +1305,22 @@ def _browser_worker(chunk: list[str], timeout: int) -> dict[str, dict]:
     return results
 
 
-def probe_quality_browser(
+def probe_playback(
     urls: list[str],
     *,
+    homes: dict[str, str] | None = None,
     budget: int = QUALITY_BROWSER_BUDGET,
     workers: int = QUALITY_BROWSER_WORKERS,
     timeout: int = QUALITY_BROWSER_TIMEOUT,
 ) -> dict[str, dict]:
-    """Measure real stream height/bitrate with a headless browser.
+    """Level-2 probe: real playback in headless Chrome (frames advancing + height).
 
-    Static HTTP probes only see the outer embed page; providers build their
-    playlist in JavaScript. Each URL is loaded inside an iframe so the site's
-    anti-embed checks pass, then m3u8/mpd requests, the player config and the
-    video element are inspected. Returns one entry per probed URL; a `height`
-    of 0 means "no hint found", not that the source is dead.
+    `homes` maps a URL to its site's home page (the probe page is served from
+    that origin). Returns one entry per probed URL with `playing`, `status`,
+    `height`, `bitrate`, `manifest`. A URL missing from the result was not
+    checked (browser unavailable), which is not a failure.
     """
+    homes = homes or {}
     selected = [str(url).strip() for url in urls if str(url or "").startswith("https://")]
     if budget > 0:
         selected = selected[:budget]
@@ -1238,8 +1328,8 @@ def probe_quality_browser(
         return {}
     workers = max(1, min(int(workers or 1), 8))
     workers = min(workers, len(selected))
-    chunk_size = max(1, (len(selected) + workers - 1) // workers)
-    chunks = [selected[i:i + chunk_size] for i in range(0, len(selected), chunk_size)]
+    # Round-robin chunks so each worker gets a mix of sites (one slow site cannot stall a worker).
+    chunks = [[(url, homes.get(url, "")) for url in selected[i::workers]] for i in range(workers)]
     results: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
         futures = [pool.submit(_browser_worker, chunk, timeout) for chunk in chunks]
@@ -1251,9 +1341,155 @@ def probe_quality_browser(
     return results
 
 
+# Old name, kept for source_health_report.py.
+probe_quality_browser = probe_playback
+
+
+def _vantage(entry: dict, name: str) -> dict:
+    vantages = entry.setdefault("vantages", {})
+    v = vantages.get(name)
+    if not isinstance(v, dict):
+        v = {"streak": 0, "last_fail": 0, "last_ok": 0}
+        vantages[name] = v
+    return v
+
+
+def _recent_app_failure(entry: dict, now: int) -> bool:
+    memory = FAIL_MEMORY_HOURS * 3600
+    return any(
+        name != CI_VANTAGE and int(v.get("streak") or 0) > 0 and now - int(v.get("last_fail") or 0) <= memory
+        for name, v in (entry.get("vantages") or {}).items()
+        if isinstance(v, dict)
+    )
+
+
+def _sync_streak(entry: dict, now: int) -> None:
+    """entry["streak"] = the worst current streak among vantages that failed recently."""
+    memory = FAIL_MEMORY_HOURS * 3600
+    entry["streak"] = max(
+        [int(v.get("streak") or 0) for v in (entry.get("vantages") or {}).values()
+         if isinstance(v, dict) and now - int(v.get("last_fail") or 0) <= memory] or [0]
+    )
+
+
+def _quarantine(entry: dict, now: int) -> None:
+    if is_disabled(entry, now):
+        return
+    q = min(int(entry.get("quarantines") or 0), len(QUARANTINE_HOURS) - 1)
+    entry["disabled_until"] = now + QUARANTINE_HOURS[q] * 3600
+    entry["quarantines"] = min(q + 1, len(QUARANTINE_HOURS) - 1)
+
+
+def should_quarantine(entry: dict, now: int) -> bool:
+    """Failures from QUARANTINE_VANTAGES vantage points, or DISABLE_STREAK in a row from one."""
+    memory = FAIL_MEMORY_HOURS * 3600
+    failing = [
+        v for v in (entry.get("vantages") or {}).values()
+        if isinstance(v, dict) and int(v.get("streak") or 0) > 0 and now - int(v.get("last_fail") or 0) <= memory
+    ]
+    return (
+        any(int(v.get("streak") or 0) >= DISABLE_STREAK for v in failing)
+        or len(failing) >= QUARANTINE_VANTAGES
+    )
+
+
+def record_vantage(entry: dict, vantage: str, ok: bool, when: int, now: int | None = None) -> None:
+    """One playback/probe verdict from one vantage point (the CI runner or a device)."""
+    now = now or when
+    v = _vantage(entry, vantage)
+    if ok:
+        v["streak"] = 0
+        v["last_ok"] = max(int(v.get("last_ok") or 0), when)
+    else:
+        v["streak"] = min(int(v.get("streak") or 0) + 1, 99)
+        v["last_fail"] = max(int(v.get("last_fail") or 0), when)
+    _sync_streak(entry, now)
+    if not ok and should_quarantine(entry, now):
+        _quarantine(entry, now)
+
+
+def _halve_if_large(entry: dict, ok_key: str, fail_key: str, cap: int = 40) -> None:
+    """Keep counts recent: once a pair passes `cap`, halve both."""
+    if int(entry.get(ok_key) or 0) + int(entry.get(fail_key) or 0) > cap:
+        entry[ok_key] = int(entry.get(ok_key) or 0) // 2
+        entry[fail_key] = int(entry.get(fail_key) or 0) // 2
+
+
+def record_app_result(state: dict, url: str, device: str, ok: bool, when: int, now: int,
+                      height: int = 0, fps: float = 0.0, kbps: int = 0) -> None:
+    """An app's playback verdict: the main health signal."""
+    entry = _entry(state, url)
+    if ok:
+        entry["app_ok"] = int(entry.get("app_ok") or 0) + 1
+        entry["app_last_ok"] = max(int(entry.get("app_last_ok") or 0), when)
+        entry["last_ok"] = max(int(entry.get("last_ok") or 0), when)
+        if height >= 480:
+            entry["verified"] = True
+        # It plays for a viewer: lift any quarantine or automatic block.
+        entry["disabled_until"] = 0
+        if entry.get("blocked"):
+            entry["blocked"] = False
+            entry["dead_fails"] = 0
+            entry.pop("blocked_reason", None)
+            entry.pop("blocked_at", None)
+    else:
+        entry["app_fail"] = int(entry.get("app_fail") or 0) + 1
+        entry["app_last_fail"] = max(int(entry.get("app_last_fail") or 0), when)
+    _halve_if_large(entry, "app_ok", "app_fail")
+    if height > 0:
+        entry["height"] = max(int(entry.get("height") or 0), height)
+    if fps > 0:
+        entry["fps"] = max(float(entry.get("fps") or 0.0), round(fps, 1))
+    if kbps > 0:
+        entry["bitrate"] = max(int(entry.get("bitrate") or 0), kbps * 1000)
+    record_vantage(entry, device or "app", ok, when, now)
+
+
+def record_playback(state: dict, url: str, result: dict, now: int) -> None:
+    """Level-2 probe verdict. A no-playback result lowers the score but cannot quarantine:
+    from a datacenter it may only mean the runner is refused."""
+    entry = _entry(state, url)
+    if result.get("playing"):
+        entry["play_ok"] = int(entry.get("play_ok") or 0) + 1
+        entry["last_play"] = now
+        height = int(result.get("height") or 0)
+        if height > 0:
+            entry["height"] = height
+            entry["bitrate"] = int(result.get("bitrate") or 0)
+            entry["verified"] = True
+        if result.get("manifest"):
+            entry["manifest"] = str(result["manifest"])[:300]
+        record_vantage(entry, CI_VANTAGE, True, now)
+    else:
+        entry["play_fail"] = int(entry.get("play_fail") or 0) + 1
+        entry["last_play_fail"] = now
+    _halve_if_large(entry, "play_ok", "play_fail")
+
+
+def health_score(entry: dict, state: dict | None = None, url: str = "") -> float:
+    """0..1, app playback first, then playback probes, then page checks, then the host's record."""
+    def part(ok: int, fail: int, weight: float, damp: float = 1.0) -> tuple[float, float]:
+        n = ok + fail
+        return (ok + 1) / (n + 2), weight * n / (n + damp)
+
+    entry = entry or {}
+    parts = [
+        part(int(entry.get("app_ok") or 0), int(entry.get("app_fail") or 0), APP_WEIGHT),
+        part(int(entry.get("play_ok") or 0), int(entry.get("play_fail") or 0), PLAYBACK_WEIGHT),
+        part(int(entry.get("ok") or 0), int(entry.get("fail") or 0), PAGE_WEIGHT),
+        (0.5, 0.5),  # prior
+    ]
+    host = ((state or {}).get("hosts") or {}).get(host_of(url)) if url else None
+    if isinstance(host, dict):
+        parts.append(part(int(host.get("ok") or 0), int(host.get("fail") or 0), 0.5, 3.0))
+    total = sum(w for _, w in parts)
+    return round(sum(r * w for r, w in parts) / total, 4) if total else 0.5
+
+
 def _record(state: dict, url: str, ok: bool, detail: str, now: int,
             trust_failures: bool, height: int = 0, bitrate: int = 0,
             manifest: str = "") -> None:
+    """Quick page check from the CI runner (vantage "ci")."""
     entries = state.setdefault("sources", {})
     if ok:
         entry = entries.get(url)
@@ -1264,27 +1500,31 @@ def _record(state: dict, url: str, ok: bool, detail: str, now: int,
             if manifest:
                 entry["manifest"] = manifest[:300]
             entry["verified"] = True
-            entry["fail"] = 0
-            entry["streak"] = 0
             entry["disabled_until"] = 0
             entry["blocked"] = False
             entry.pop("blocked_reason", None)
             entry.pop("blocked_at", None)
-            if not entry.get("last_ok"):
-                entry["last_ok"] = now
-            return
-        if entry and int(entry.get("height") or 0) > 0:
-            entry["fail"] = 0
-            entry["streak"] = 0
-            entry["disabled_until"] = 0
-            return
-        # A working URL with no measured quality needs no history.
-        entries.pop(url, None)
+        if entry is None:
+            return  # a working URL with no history needs no entry
+        entry["ok"] = min(int(entry.get("ok") or 0) + 1, 9999)
+        entry["last_ok"] = now
+        entry["last_status"] = str(detail)[:24]
+        _halve_if_large(entry, "ok", "fail")
+        record_vantage(entry, CI_VANTAGE, True, now)
         return
     if not trust_failures:
         return
-    entry = _entry(state, url)
     status = str(detail)[:24]
+    if status in SERVER_BLOCKED_STATUSES:
+        entry = entries.get(url)
+        if entry is None or not _recent_app_failure(entry, now):
+            # Refused from the server only: note it, never count it.
+            entry = _entry(state, url)
+            entry["last_status"] = status
+            entry["server_blocked"] = min(int(entry.get("server_blocked") or 0) + 1, 9999)
+            entry["last_server_block"] = now
+            return
+    entry = _entry(state, url)
     entry["last_status"] = status
     if status.startswith("manifest-"):
         # The stream URL itself is gone/forbidden; drop the stale quality so it
@@ -1293,7 +1533,6 @@ def _record(state: dict, url: str, ok: bool, detail: str, now: int,
         entry["bitrate"] = 0
         entry["verified"] = False
     entry["fail"] = min(int(entry.get("fail") or 0) + 1, 9999)
-    entry["streak"] = min(int(entry.get("streak") or 0) + 1, 99)
     entry["last_fail"] = now
     manifest_code = status.split("-", 1)[1] if status.startswith("manifest-") else ""
     if status in DEFINITIVE_STATUSES or manifest_code in DEFINITIVE_STATUSES:
@@ -1304,10 +1543,7 @@ def _record(state: dict, url: str, ok: bool, detail: str, now: int,
         entry["blocked_at"] = now
         entry["disabled_until"] = 0
         return
-    if int(entry["streak"]) >= DISABLE_STREAK or int(entry["fail"]) >= DISABLE_TOTAL:
-        q = min(int(entry.get("quarantines") or 0), len(QUARANTINE_HOURS) - 1)
-        entry["disabled_until"] = now + QUARANTINE_HOURS[q] * 3600
-        entry["quarantines"] = min(q + 1, len(QUARANTINE_HOURS) - 1)
+    record_vantage(entry, CI_VANTAGE, False, now)
     if int(entry.get("fail") or 0) >= PERMANENT_FAIL_TOTAL and int(entry.get("quarantines") or 0) >= PERMANENT_QUARANTINES:
         entry["blocked"] = True
         entry["blocked_reason"] = f"failed {entry['fail']}x across {entry['quarantines']} quarantines"
@@ -1333,10 +1569,10 @@ def ingest_telemetry_from_git(
         return {"rows": 0, "hosts": 0}
 
     state = load_state(state_path)
+    now = _now()
     last_ts = str(state.get("last_telemetry_ts") or "")
     max_ts = last_ts
     hosts = state.setdefault("hosts", {})
-    sources_map = state.setdefault("sources", {})
     processed = 0
 
     for name in names:
@@ -1384,22 +1620,11 @@ def ingest_telemetry_from_git(
                     bucket["height"] = max(int(bucket.get("height") or 0), h)
                 if kbps > 0:
                     bucket["stream_kbps"] = max(int(bucket.get("stream_kbps") or 0), kbps)
-                if url:
-                    entry = sources_map.setdefault(url, {"ok": 0, "fail": 0, "streak": 0})
-                    if ok_val:
-                        entry["ok"] = int(entry.get("ok") or 0) + 1
-                        entry["streak"] = 0
-                        if h >= 480:
-                            entry["verified"] = True
-                    else:
-                        entry["fail"] = int(entry.get("fail") or 0) + 1
-                        entry["streak"] = int(entry.get("streak") or 0) + 1
-                    if h > 0:
-                        entry["height"] = max(int(entry.get("height") or 0), h)
-                    if fps > 0:
-                        entry["fps"] = max(float(entry.get("fps") or 0.0), round(fps, 1))
-                    if kbps > 0:
-                        entry["bitrate"] = max(int(entry.get("bitrate") or 0), kbps * 1000)
+                if url.startswith("https://"):
+                    record_app_result(
+                        state, url, str(row.get("device") or "app"), ok_val,
+                        _iso_epoch(ts) or now, now, height=h, fps=fps, kbps=kbps,
+                    )
                 processed += 1
             elif rtype in ("first_frame", "source_quality"):
                 h = int(row.get("height") or 0)
@@ -1431,12 +1656,29 @@ def apply_source_health(
     quality_budget: int = QUALITY_BROWSER_BUDGET,
     quality_workers: int = QUALITY_BROWSER_WORKERS,
     quality_timeout: int = QUALITY_BROWSER_TIMEOUT,
+    planner=None,
+    homes: dict[str, str] | None = None,
+    site_of: dict[str, str] | None = None,
+    playback_recheck_min: int = 90,
 ) -> dict:
-    """Probe, rank and trim sources on feed-shaped event dictionaries."""
+    """Probe, rank and trim sources on feed-shaped event dictionaries.
+
+    With a ``planner`` (probe_scheduler.plan_probes) only the URLs it picks are
+    page-probed, and its priority order drives the playback checks
+    (``quality_budget`` per run, 0 = off). Without one, the legacy behaviour:
+    the top candidates of every event (or all of them with ``probe_all``).
+    ``homes`` maps URL -> site home page (playback probe origin); ``site_of``
+    maps URL -> site id for the per-site run counts the canary reads.
+    """
     now = _now()
     state = load_state(state_path)
     entries = state.setdefault("sources", {})
     blocklist = load_blocklist(blocklist_path)
+    homes = homes or {}
+    site_of = site_of or {}
+    plan = None
+    if do_probe and planner is not None and not probe_all:
+        plan = planner(events, state, now, blocklist=blocklist)
 
     candidates_by_event: list[list[dict]] = []
     unique: list[str] = []
@@ -1473,9 +1715,11 @@ def apply_source_health(
             if not url:
                 continue
             all_unique.add(url)
-            if url not in seen and len(unique) < probe_budget:
+            if plan is None and url not in seen and len(unique) < probe_budget:
                 seen.add(url)
                 unique.append(url)
+    if plan is not None:
+        unique = list(plan["page"])
 
     results: dict[str, tuple[bool, str]] = {}
     trusted = True
@@ -1484,6 +1728,7 @@ def apply_source_health(
         "quality_probed": 0,
         "quality_browser_measured": 0,
         "quality_manifests": 0,
+        "playback_ok": 0,
     }
     host_stats: dict[str, dict] = {}
     manifest_failures = 0
@@ -1500,32 +1745,37 @@ def apply_source_health(
                 "ignoring failures this run (runner network looks blocked)",
                 flush=True,
             )
-        # Static HTML only sees the outer embed. Measure the live URLs that still
-        # have no height with a real browser (bounded, and only unmeasured URLs).
+        # Level 2: real playback in a browser for page-ok URLs, in priority
+        # order, skipping ones verified playing within playback_recheck_min.
         if quality_budget > 0:
+            order = list(plan["playback"]) if plan is not None else unique
+            recheck = max(0, int(playback_recheck_min)) * 60
             browser_urls = [
-                url for url in unique
+                url for url in order
                 if detailed.get(url, {}).get("ok")
-                and int(detailed.get(url, {}).get("height") or 0) <= 0
-                and int(entries.get(url, {}).get("height") or 0) <= 0
+                and now - int(entries.get(url, {}).get("last_play") or 0) >= recheck
             ]
+            if plan is None and len(browser_urls) > quality_budget:
+                # Rotate the window so successive runs cover the whole catalogue.
+                offset = now % len(browser_urls)
+                browser_urls = browser_urls[offset:] + browser_urls[:offset]
             if browser_urls:
-                if len(browser_urls) > quality_budget:
-                    # Rotate the window so successive runs eventually measure the
-                    # whole catalogue instead of re-probing the same first batch.
-                    offset = now % len(browser_urls)
-                    browser_urls = browser_urls[offset:] + browser_urls[:offset]
-                measured = probe_quality_browser(
+                measured = probe_playback(
                     browser_urls,
+                    homes=homes,
                     budget=quality_budget,
                     workers=quality_workers,
                     timeout=quality_timeout,
                 )
                 quality_stats["quality_probed"] = len(measured)
                 for url, quality in measured.items():
+                    record_playback(state, url, quality, now)
                     info = detailed.get(url)
                     if info is None:
                         continue
+                    info["playing"] = bool(quality.get("playing"))
+                    if quality.get("playing"):
+                        quality_stats["playback_ok"] += 1
                     if quality.get("manifest"):
                         quality_stats["quality_manifests"] += 1
                         info["manifest"] = str(quality["manifest"])
@@ -1622,8 +1872,26 @@ def apply_source_health(
                 multi_host_events += 1
         event["sources"] = final
 
+    site_probe: dict[str, dict] = {}
+    for url, info in detailed.items():
+        site = site_of.get(url)
+        if not site:
+            continue
+        bucket = site_probe.setdefault(site, {"probed": 0, "ok": 0, "server_blocked": 0, "play_tried": 0, "played": 0})
+        bucket["probed"] += 1
+        if info.get("ok"):
+            bucket["ok"] += 1
+        elif str(info.get("status") or "") in SERVER_BLOCKED_STATUSES:
+            bucket["server_blocked"] += 1
+        if "playing" in info:
+            bucket["play_tried"] += 1
+            bucket["played"] += 1 if info["playing"] else 0
+
     stats = {
         "probed": len(results),
+        "playback_ok": quality_stats["playback_ok"],
+        "scheduled": (plan or {}).get("counts", {}),
+        "site_probe": site_probe,
         "probe_ok": sum(1 for ok, _ in results.values() if ok),
         "probe_failed": sum(1 for ok, _ in results.values() if not ok),
         "trusted": trusted,
@@ -1663,7 +1931,7 @@ def apply_source_health(
           f"blocked={stats['sources_blocked']} quarantined={stats['sources_quarantined']} "
           f"unprobed={stats['unprobed']} "
           f"quality={stats['quality_measured']} measured "
-          f"browser={stats['quality_browser_measured']}/{stats['quality_probed']} "
+          f"playback={stats['playback_ok']}/{stats['quality_probed']} "
           f"manifests={stats['quality_manifests']} manifest_dead={stats['manifest_failed']} "
           f"trimmed={trimmed} empty={empty} selected={selected_sources} "
           f"weak_dropped={weak_dropped} weak_kept={weak_kept} "

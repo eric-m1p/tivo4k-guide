@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  issues: write # site canary opens/closes "Site down" issues
 
 concurrency:
   group: guide
@@ -45,19 +46,21 @@ jobs:
           fi
           python -m playwright install-deps chromium
 
-      - name: Feed v2 rules (unit tests)
-        run: python3 -m unittest test_feed_v2
+      - name: Feed v2 + source health rules (unit tests)
+        run: python3 -m unittest test_feed_v2 test_source_health_v2
 
       - name: Fetch device telemetry branch (optional)
         run: git fetch origin telemetry:refs/remotes/origin/telemetry || true
 
+      # Probe budget, live window, 24/7 cadence, playback checks and canary
+      # thresholds all come from feed_policy.json (policy.probe / policy.canary).
       - name: Distill events feed (PPV + all StreamCorner providers)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 distill_events.py --streamcorner \
             --sites isportsurge,buffstreams,totalsporteki,roxiestreams \
-            --probe-sources --probe-all \
-            --probe-workers 64 --probe-budget 6000 \
-            --quality-budget 120 --quality-workers 4 --quality-timeout 10 \
+            --probe-sources --probe-workers 64 --quality-workers 4 \
             --json events.json \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
