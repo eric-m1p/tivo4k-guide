@@ -51,6 +51,12 @@ def site_rows(policy: dict, ppv_rows: int | None, sc_counts: dict | None, site_c
     return rows
 
 
+def scrape_by_site(policy: dict, scrape: dict | None) -> dict[str, dict]:
+    """site_plugins stats per site id (plugin names map like site_rows)."""
+    index = {p.upper(): site for site, meta in policy["sites"].items() for p in meta.get("providers") or []}
+    return {index.get(str(name).upper(), str(name).lower()): stats for name, stats in (scrape or {}).items()}
+
+
 def app_by_site(state: dict, site_of: dict[str, str], now: int) -> dict[str, dict]:
     """Recent app verdicts per site, from per-URL app counters."""
     out: dict[str, dict] = {}
@@ -70,8 +76,14 @@ def app_by_site(state: dict, site_of: dict[str, str], now: int) -> dict[str, dic
 
 
 def update(state: dict, rows: dict[str, int], site_probe: dict[str, dict],
-           apps: dict[str, dict], now: int, policy: dict | None = None) -> list[dict]:
-    """Fold one run into state["sites"]; return transitions to alert on."""
+           apps: dict[str, dict], now: int, policy: dict | None = None,
+           scrape: dict[str, dict] | None = None) -> list[dict]:
+    """Fold one run into state["sites"]; return transitions to alert on.
+
+    ``scrape`` (site_plugins stats) only sharpens the reason: when the pages
+    loaded but nothing parsed, a zero-row outage is reported as a likely
+    layout change rather than the site being unreachable.
+    """
     p = {**DEFAULTS, **(policy or {})}
     keep = max(3, int(p["baseline_runs"]))
     need = max(1, int(p["bad_runs"]))
@@ -84,6 +96,10 @@ def update(state: dict, rows: dict[str, int], site_probe: dict[str, dict],
         n = rows.get(site)
         probe = site_probe.get(site) or {}
         app = apps.get(site) or {}
+        scraped = (scrape or {}).get(site) or {}
+        if scraped:
+            s["scrape"] = {k: scraped.get(k) for k in ("verdict", "pages", "error", "seconds") if k in scraped}
+        layout = scraped.get("verdict") == "layout"
 
         baseline = statistics.median(history) if len(history) >= 3 else 0
         normally_full = bool(history) and sum(1 for h in history if h > 0) >= 0.9 * len(history)
@@ -113,6 +129,11 @@ def update(state: dict, rows: dict[str, int], site_probe: dict[str, dict],
         previous = s.get("status", "ok")
         if s["bad_runs"] >= need:
             status, reason = "down", f"0 rows for {s['bad_runs']} runs (usually ~{baseline:g})"
+            if layout:
+                pages = (scraped.get("pages") or {}).get("ok", 0)
+                reason += f"; layout change likely: {pages} pages loaded, nothing parsed"
+            elif scraped.get("verdict") == "down":
+                reason += "; site unreachable" + (f" ({scraped['error']})" if scraped.get("error") else "")
         elif s["play_bad_runs"] >= need and apps_dead:
             status, reason = "down", (
                 f"nothing plays: {probe.get('play_tried', 0)} playback checks, "

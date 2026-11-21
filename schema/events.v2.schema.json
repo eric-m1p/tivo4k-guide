@@ -190,7 +190,9 @@
             "min_yield_ratio": { "type": "number", "minimum": 0, "maximum": 1, "description": "A run below this share of the site's usual row count is a bad run." },
             "baseline_runs": { "type": "integer", "minimum": 1, "description": "Runs kept for the usual row count." },
             "bad_runs": { "type": "integer", "minimum": 1, "description": "Consecutive bad runs before the site is disabled and an alert goes out." },
-            "alert": { "type": "string", "enum": ["github_issue", "none"] }
+            "alert": { "type": "string", "enum": ["github_issue", "none"] },
+            "backoff_after_runs": { "type": "integer", "minimum": 1, "description": "Scraper runs in a row with the site unreachable before it is skipped (site_plugins.py)." },
+            "backoff_max_min": { "type": "integer", "minimum": 30, "description": "Longest skip; the skip doubles from one 30-minute run up to this." }
           },
           "additionalProperties": false
         },

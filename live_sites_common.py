@@ -51,8 +51,56 @@ def now_sec() -> int:
     return int(time.time())
 
 
+# Per-site page counters for the plugin harness (site_plugins.py): it sets the
+# current site before calling a plugin's fetch() and reads them afterwards to
+# tell "site unreachable" from "pages load but nothing parses" (layout change).
+FETCH_STATS: dict[str, dict] = {}
+_current_site = ""
+_stats_lock = __import__("threading").Lock()
+THROTTLE_MAX_WAIT = 10.0  # seconds; longer Retry-After values are cut to this
+
+
+def begin_site(name: str) -> None:
+    global _current_site
+    _current_site = name
+    with _stats_lock:
+        FETCH_STATS[name] = {"ok": 0, "fail": 0, "throttled": 0}
+
+
+def end_site() -> dict:
+    global _current_site
+    name, _current_site = _current_site, ""
+    with _stats_lock:
+        return dict(FETCH_STATS.get(name) or {"ok": 0, "fail": 0, "throttled": 0})
+
+
+def note_page(ok: bool, throttled: bool = False) -> None:
+    """Count one page fetch for the current site (sites with their own fetcher call this too)."""
+    site = _current_site
+    if not site:
+        return
+    with _stats_lock:
+        stats = FETCH_STATS.setdefault(site, {"ok": 0, "fail": 0, "throttled": 0})
+        if throttled:
+            stats["throttled"] += 1
+        else:
+            stats["ok" if ok else "fail"] += 1
+
+
+def _retry_after(exc: urllib.error.HTTPError, attempt: int) -> float:
+    try:
+        wait = float(exc.headers.get("Retry-After") or 0)
+    except (TypeError, ValueError):
+        wait = 0.0
+    return min(THROTTLE_MAX_WAIT, wait or 2.0 ** (attempt + 1))
+
+
 def get(url: str, referer: str = "", timeout: int = 25, retries: int = 2) -> str:
-    """GET a page as text. Retries transient failures; returns '' on hard failure."""
+    """GET a page as text; returns '' on hard failure.
+
+    Transient failures retry with a growing pause; 429/503 honour Retry-After
+    (capped); other 4xx fail at once (retrying a 404 never helps).
+    """
     headers = {
         "User-Agent": SITE_UA,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -69,10 +117,22 @@ def get(url: str, referer: str = "", timeout: int = 25, retries: int = 2) -> str
                 data = r.read()
                 if r.headers.get("Content-Encoding", "").lower() == "gzip":
                     data = gzip.decompress(data)
+                note_page(True)
                 return data.decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            last = f"HTTP {exc.code}"
+            if exc.code in (429, 503):
+                note_page(False, throttled=True)
+                if attempt < retries:
+                    time.sleep(_retry_after(exc, attempt))
+                continue
+            if 400 <= exc.code < 500:
+                break
+            time.sleep(0.8 * (attempt + 1))
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             last = str(exc)
             time.sleep(0.8 * (attempt + 1))
+    note_page(False)
     if last:
         print(f"[sites] GET failed {url[:90]}: {last[:80]}", file=sys.stderr)
     return ""

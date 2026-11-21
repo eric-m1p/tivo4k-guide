@@ -47,7 +47,7 @@ jobs:
           python -m playwright install-deps chromium
 
       - name: Feed v2 + source health rules (unit tests)
-        run: python3 -m unittest test_feed_v2 test_source_health_v2 test_channel_health
+        run: python3 -m unittest test_feed_v2 test_source_health_v2 test_channel_health test_site_snapshots
 
       - name: Fetch device telemetry branch (optional)
         run: git fetch origin telemetry:refs/remotes/origin/telemetry || true

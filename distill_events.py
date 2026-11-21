@@ -582,30 +582,31 @@ def merge_site_feed(
     now_sec: int,
     sites: list[str],
     limit: int = 0,
+    state: dict | None = None,
+    canary_policy: dict | None = None,
+    scrape: dict | None = None,
 ) -> tuple[list[dict], dict]:
     """Fetch the extra live-stream sites (sportsurge/buffstreams/…) and merge them in.
 
-    Each ``sites_<name>.py`` module exposes ``fetch(limit=0) -> list[dict]`` in the
-    same feed shape this script writes; a failure in one site must never abort the
-    rest of the refresh.
+    Each ``sites_<name>.py`` plugin runs through ``site_plugins.run`` (page counters,
+    backoff, layout-vs-down verdict; see site_plugins.py). A failure in one site
+    never aborts the rest of the refresh. Per-site stats land in ``scrape``.
     """
-    import importlib
-
+    import site_plugins
     import streamcorner_api as sc
 
     site_events: list = []
     counts: dict[str, int] = {}
+    state = state if state is not None else {}
     for name in sites:
         name = name.strip().lower()
         if not name:
             continue
-        try:
-            module = importlib.import_module(f"sites_{name}")
-            rows = module.fetch(limit=limit) or []
-        except Exception as exc:  # noqa: BLE001 - one bad site must not break the feed
-            print(f"[sites] {name}: FAILED ({exc})", file=sys.stderr)
-            counts[name] = 0
-            continue
+        rows, stats = site_plugins.run(name, state, now_sec, canary_policy, limit=limit)
+        if scrape is not None:
+            scrape[name] = stats
+        if stats.get("skipped"):
+            continue  # backing off: no row count, so the canary keeps its verdict
         counts[name] = len(rows)
         site_events.extend(_event_from_feed_dict(record, now_sec) for record in rows)
 
@@ -812,9 +813,18 @@ def main() -> int:
             sc_counts = {}
 
     site_counts = None
+    scrape_stats: dict = {}
     if args.sites:
         sites = [s.strip() for s in args.sites.split(",") if s.strip()]
-        events, site_counts = merge_site_feed(events, now_sec, sites, limit=args.sites_limit)
+        import feed_v2 as _fv
+        import source_health as _sh
+        scraper_state = _sh.load_state(args.source_health)
+        events, site_counts = merge_site_feed(
+            events, now_sec, sites, limit=args.sites_limit, state=scraper_state,
+            canary_policy=_fv.load_policy()["policy"].get("canary") or {}, scrape=scrape_stats,
+        )
+        if not args.dry_run:
+            _sh.save_state(args.source_health, scraper_state, scraper_state.get("stats") or {})
 
     events = dedupe_event_sources(events)
 
@@ -903,6 +913,7 @@ def main() -> int:
             alerts = site_canary.update(
                 state, rows, health_stats.get("site_probe") or {},
                 site_canary.app_by_site(state, site_of, now_sec), now_sec, canary_policy,
+                scrape=site_canary.scrape_by_site(policy, scrape_stats),
             )
             source_health.save_state(args.source_health, state, state.get("stats") or {})
             site_canary.overlay(policy, state)
