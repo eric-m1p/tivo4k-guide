@@ -114,6 +114,18 @@
       ],
       "WorldHarvestTV.us@SD": [
         "World.Harvest.Television.us2"
+      ],
+      "IONMystery.us@SD": [
+        "ION.Mystery.us2"
+      ],
+      "ImpactNetwork.us@SD": [
+        "Impact.Network.us2"
+      ],
+      "PureFlixTV.us@SD": [
+        "Pure.Flix.TV.us2"
+      ],
+      "LocalNow.us@SD": [
+        "Local.Now.us2"
       ]
     }
   },
@@ -134,6 +146,9 @@
       ],
       "SwerveCombat.us@SD": [
         "99991696"
+      ],
+      "ReelzFamousInfamous.us@HD": [
+        "99991368"
       ]
     }
   },
@@ -151,6 +166,9 @@
       ],
       "SonyMovies.us@SD": [
         "Sony Movies HD.us"
+      ],
+      "RetroTV.us@East": [
+        "Retro TV HD.us"
       ]
     }
   },
@@ -267,6 +285,12 @@
       ],
       "TheDoctors.us@HD": [
         "plex.tv.The.Doctors.plex"
+      ],
+      "LaffMore.us@HD": [
+        "plex.tv.Laff.More.plex"
+      ],
+      "ClassicCinema.us@SD": [
+        "plex.tv.Classic.Cinema.plex"
       ]
     }
   },
@@ -278,6 +302,12 @@
       ],
       "Roar.us@SD": [
         "Roar.us"
+      ],
+      "TrueCrimeNetwork.us@SD": [
+        "True Crime Network.us"
+      ],
+      "Telemundo.us@WCAU": [
+        "Telemundo.us"
       ]
     }
   },
@@ -319,6 +349,12 @@
       ],
       "WVVHCD181.us@HD": [
         "WVVH-CD.us_locals1"
+      ],
+      "3TV.us@KTVK": [
+        "KTVK-DT.us_locals1"
+      ],
+      "TLN.ca@KQSL": [
+        "KQSL-DT.us_locals1"
       ]
     },
     "override_channels": [
@@ -408,6 +444,17 @@
       ],
       "StingrayCozyCafe.ca@HD": [
         "f8f717f72440fb688192f83faa71a8ab"
+      ],
+      "DiscoveryTurbo.us@SD": [
+        "b741b23ecde35d84a9eef29d52cc9ac4"
+      ]
+    }
+  },
+  {
+    "url": "https://www.open-epg.com/files/unitedstates2.xml.gz",
+    "channels": {
+      "YTATV.us@SD": [
+        "YTA.us"
       ]
     }
   }
