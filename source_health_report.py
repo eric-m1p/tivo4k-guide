@@ -58,12 +58,17 @@ def _short_url(url: str) -> str:
 
 
 def _sort_stack(rows: list[dict]) -> list[dict]:
-    rank = {0: 0, 1: 1, 2: 2, 3: 3}
     return sorted(
         rows,
         key=lambda row: (
             0 if row["ok"] else 1,
-            rank.get(row["quality"], 9),
+            -sh._quality_score(
+                {"label": row.get("label", ""), "url": row.get("url", "")},
+                int(row.get("height") or 0),
+            ),
+            -int(row.get("height") or 0),
+            0 if row.get("verified") else 1,
+            -int(row.get("bitrate") or 0),
             row["latency_ms"] if row["ok"] else 10**9,
             row["fails"],
             row["label"].lower(),
@@ -216,6 +221,10 @@ def main() -> int:
                     info["verified"] = True
                     info["quality"] = str(quality.get("quality") or "")
 
+    manifest_failures = sh.apply_manifest_failures(results, trusted=True)
+    if manifest_failures:
+        print(f"manifest failures: {manifest_failures} sources marked dead", flush=True)
+
     if args.write_health:
         for url, result in results.items():
             sh._record(
@@ -320,13 +329,15 @@ def main() -> int:
         "quality_manifests": sum(
             1 for result in results.values() if str(result.get("manifest") or "")
         ),
+        "manifest_failed": manifest_failures,
     }
 
     print(
         f"events={summary['events']} sources={summary['sources_examined']} "
         f"probed={summary['probed']} ok={summary['ok']} failed={summary['failed']} "
         f"pass={summary['pass_rate']:.0%} quality={summary['quality_measured']} measured "
-        f"({summary['quality_probed']} browser probes, {summary['quality_manifests']} manifests)"
+        f"({summary['quality_probed']} browser probes, {summary['quality_manifests']} manifests, "
+        f"{summary['manifest_failed']} manifest-dead)"
     )
     print()
     for report in event_reports[: max(0, args.show)]:
@@ -412,10 +423,27 @@ def main() -> int:
             report = by_key.get(event.get("canonical_key", ""))
             if not report:
                 continue
-            keep = []
+            limit = max(1, args.max_sources)
+            chosen: list[dict] = []
+            chosen_urls: set[str] = set()
+            used_hosts: set[str] = set()
             for row in report["stack"]:
-                if not row["ok"]:
+                if len(chosen) >= limit:
+                    break
+                if not row["ok"] or row["url"] in chosen_urls or row["host"] in used_hosts:
                     continue
+                chosen.append(row)
+                chosen_urls.add(row["url"])
+                used_hosts.add(row["host"])
+            for row in report["stack"]:
+                if len(chosen) >= limit:
+                    break
+                if not row["ok"] or row["url"] in chosen_urls:
+                    continue
+                chosen.append(row)
+                chosen_urls.add(row["url"])
+            keep = []
+            for row in chosen:
                 keep.append({
                     "origin": row["origin"],
                     "label": row["label"],
@@ -427,8 +455,6 @@ def main() -> int:
                     "verified": bool(row.get("verified")),
                     "quality": row.get("quality_text", ""),
                 })
-                if len(keep) >= max(1, args.max_sources):
-                    break
             event["sources"] = keep
         output["source_report_at"] = now
         Path(args.apply_out).write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")

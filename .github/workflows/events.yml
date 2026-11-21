@@ -6,6 +6,8 @@ name: Refresh Live Events Feed
 #   - every StreamCorner provider through the site's own provider-data worker
 #     (NFL, NBA, UEFA Nations League, ALPHA, BETA, CHARLIE, #001, /extra,
 #      24/7 admin/channel lists)
+#   - the extra sportsurge-family sites (isportsurge, buffstreams,
+#     totalsporteki, roxiestreams) for additional mirrors per fixture
 on:
   schedule:
     - cron: "*/30 * * * *"
@@ -48,10 +50,12 @@ jobs:
 
       - name: Distill events feed (PPV + all StreamCorner providers)
         run: |
-          python3 distill_events.py --streamcorner --probe-sources --probe-all \
+          python3 distill_events.py --streamcorner \
+            --sites isportsurge,buffstreams,totalsporteki,roxiestreams \
+            --probe-sources --probe-all \
             --probe-workers 64 --probe-budget 6000 \
             --quality-budget 120 --quality-workers 4 --quality-timeout 10 \
-            --max-sources 8 --json events.json \
+            --json events.json \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Commit events.json if it changed

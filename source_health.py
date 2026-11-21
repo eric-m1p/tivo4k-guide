@@ -362,7 +362,7 @@ def _selection_key(
     )
 
 
-def _select_best_sources(candidates: list[dict], limit: int) -> list[dict]:
+def _select_best_sources(candidates: list[dict], limit: int | None) -> list[dict]:
     """Greedy best-N with host diversity, then fill from the same hosts.
 
     Liveness always wins: every probe-ok source outranks unprobed/failed
@@ -370,7 +370,9 @@ def _select_best_sources(candidates: list[dict], limit: int) -> list[dict]:
     one CDN outage cannot take out the whole failover stack; the remaining
     slots are then filled with the best duplicates.
     """
-    if not candidates or limit <= 0:
+    if not candidates:
+        return []
+    if limit is not None and limit <= 0:
         return []
     ordered = sorted(candidates, key=lambda item: item["key"])
     healthy = [item for item in ordered if item["ok"] is True]
@@ -382,7 +384,7 @@ def _select_best_sources(candidates: list[dict], limit: int) -> list[dict]:
 
     def diverse(pool: list[dict]) -> None:
         for item in pool:
-            if len(selected) >= limit:
+            if limit is not None and len(selected) >= limit:
                 return
             host = item["host"]
             if host in used_hosts:
@@ -397,7 +399,7 @@ def _select_best_sources(candidates: list[dict], limit: int) -> list[dict]:
 
     def fill(pool: list[dict]) -> None:
         for item in pool:
-            if len(selected) >= limit:
+            if limit is not None and len(selected) >= limit:
                 return
             src = item["src"]
             url = str(src.get("url") or "")
@@ -409,14 +411,14 @@ def _select_best_sources(candidates: list[dict], limit: int) -> list[dict]:
     for pool in (healthy, unprobed, failed):
         diverse(pool)
         fill(pool)
-        if len(selected) >= limit:
+        if limit is not None and len(selected) >= limit:
             break
     # Keep the diverse membership but play the best source first: a lower-quality
     # mirror on a new host is a fallback, not something to try before a better
     # duplicate on a host that already answered.
     key_by_url = {str(item["src"].get("url") or ""): item["key"] for item in candidates}
     selected.sort(key=lambda src: key_by_url.get(str(src.get("url") or ""), ()))
-    return selected[:limit]
+    return selected if limit is None else selected[:limit]
 
 
 def ranked_sources(
@@ -1414,9 +1416,13 @@ def apply_source_health(
                 blocked_in_feed.add(url)
             elif is_disabled(entry, now):
                 quarantined_in_feed.add(url)
-        limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max(CANDIDATE_POOL, max_sources * 2)
         ranked = ranked_sources(event.get("sources") or [], state, now, blocklist=blocklist)
-        pool = ranked if probe_all else ranked[:limit]
+        if max_sources <= 0:
+            # 0 = no cap: rank everything and let the quality/probe verdict drop the bad ones.
+            pool = ranked
+        else:
+            limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max(CANDIDATE_POOL, max_sources * 2)
+            pool = ranked if probe_all else ranked[:limit]
         candidates_by_event.append(pool)
         for src in pool:
             url = str(src.get("url") or "").strip()
@@ -1509,7 +1515,10 @@ def apply_source_health(
     selected_sources = 0
     multi_host_events = 0
     for index, event in enumerate(events):
-        limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max_sources
+        if max_sources <= 0:
+            limit = None  # publish every mirror that survives ranking + probing
+        else:
+            limit = MAX_SOURCES_247 if event.get("status") == "always_live" else max_sources
         source_list = event.get("sources") or []
         for src in source_list:
             url = str(src.get("url") or "").strip()
@@ -1547,6 +1556,9 @@ def apply_source_health(
                     src, entry, detailed.get(url), probe_ok, host_stats, state, index
                 ),
             })
+        if limit is None:
+            # No cap: a mirror that just failed has nothing to offer the stack.
+            candidates = [c for c in candidates if c["ok"] is not False]
         final = _select_best_sources(candidates, limit)
         if len(final) != len(source_list):
             trimmed += 1

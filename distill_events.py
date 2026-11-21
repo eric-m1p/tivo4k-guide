@@ -576,6 +576,96 @@ def merge_streamcorner_feed(
     return out_dicts, counts
 
 
+def merge_site_feed(
+    events: list[dict],
+    now_sec: int,
+    sites: list[str],
+    limit: int = 0,
+) -> tuple[list[dict], dict]:
+    """Fetch the extra live-stream sites (sportsurge/buffstreams/…) and merge them in.
+
+    Each ``sites_<name>.py`` module exposes ``fetch(limit=0) -> list[dict]`` in the
+    same feed shape this script writes; a failure in one site must never abort the
+    rest of the refresh.
+    """
+    import importlib
+
+    import streamcorner_api as sc
+
+    site_events: list = []
+    counts: dict[str, int] = {}
+    for name in sites:
+        name = name.strip().lower()
+        if not name:
+            continue
+        try:
+            module = importlib.import_module(f"sites_{name}")
+            rows = module.fetch(limit=limit) or []
+        except Exception as exc:  # noqa: BLE001 - one bad site must not break the feed
+            print(f"[sites] {name}: FAILED ({exc})", file=sys.stderr)
+            counts[name] = 0
+            continue
+        counts[name] = len(rows)
+        site_events.extend(_event_from_feed_dict(record, now_sec) for record in rows)
+
+    if not site_events:
+        return events, counts
+
+    ppv_events = [_event_from_feed_dict(record, now_sec) for record in events]
+    merged = sc.merge_events(ppv_events, site_events)
+    merged.sort(key=sc.sort_key)
+    print(
+        "[sites] " + ", ".join(f"{p}={n}" for p, n in counts.items())
+        + f" -> {len(site_events)} site rows, {len(merged)} merged events",
+        flush=True,
+    )
+    out_dicts = []
+    for event in merged:
+        if not any(ch.isalnum() for ch in (event.title or "")):
+            continue
+        if event.status != "always_live" and is_channel_like_title(event.title):
+            event.status = "always_live"
+            event.title, event.category, event.league = normalize_always_live(
+                event.title, event.category, event.league
+            )
+            event.canonical_key = canonical_key("ev", event.title, event.starts_at, True, now_sec)
+            event.time_label = "24/7"
+        out_dicts.append(_feed_dict_from_event(event, now_sec))
+    return out_dicts, counts
+
+
+def dedupe_event_sources(events: list[dict]) -> list[dict]:
+    """Drop per-event mirrors that resolve to the same feed.
+
+    Different sites publish the same physical stream (same gooz id / topstream player /
+    HLS channel) under different URLs.  Identity is the feed, not the event: events are
+    never merged or dropped here, only the duplicate URLs inside each event's source list.
+    """
+    try:
+        import live_sites_common as sites_common
+        ident = sites_common.stream_identity
+    except Exception:  # noqa: BLE001 - keep the feed building even without the helper
+        def ident(url: str) -> str:
+            return (url or "").split("?", 1)[0].rstrip("/").lower()
+
+    removed = 0
+    for record in events:
+        seen: set[str] = set()
+        kept: list[dict] = []
+        for src in record.get("sources") or []:
+            url = str(src.get("url") or "")
+            key = ident(url)
+            if not url or key in seen:
+                removed += 1
+                continue
+            seen.add(key)
+            kept.append(src)
+        record["sources"] = kept
+    if removed:
+        print(f"[dedupe] dropped {removed} duplicate source URLs (same feed)", flush=True)
+    return events
+
+
 def save_json(events: list[dict], now_sec: int, json_path: str) -> None:
     payload = {
         "synced_at": now_sec,
@@ -627,6 +717,20 @@ def main() -> int:
         help="also fetch every StreamCorner provider feed and merge it in",
     )
     parser.add_argument(
+        "--sites",
+        default="",
+        help=(
+            "comma-separated extra live-stream sites to merge in: "
+            "isportsurge,buffstreams,totalsporteki,roxiestreams"
+        ),
+    )
+    parser.add_argument(
+        "--sites-limit",
+        type=int,
+        default=0,
+        help="cap how many events each extra site pulls (0 = site default)",
+    )
+    parser.add_argument(
         "--sc-providers",
         default="",
         help="comma-separated StreamCorner provider ids (default: all)",
@@ -639,7 +743,12 @@ def main() -> int:
         default=True,
         help="probe source URLs before publishing and cap each event's list (default: on)",
     )
-    parser.add_argument("--max-sources", type=int, default=8, help="max sources kept per event")
+    parser.add_argument(
+        "--max-sources",
+        type=int,
+        default=0,
+        help="max sources kept per event (0 = no cap: ranked by measured quality, dead mirrors dropped)",
+    )
     parser.add_argument("--probe-budget", type=int, default=3000, help="max unique URLs probed per run")
     parser.add_argument("--probe-workers", type=int, default=32)
     parser.add_argument(
@@ -686,6 +795,12 @@ def main() -> int:
             worker_asset=args.sc_worker_asset or None,
         )
 
+    if args.sites:
+        sites = [s.strip() for s in args.sites.split(",") if s.strip()]
+        events, _ = merge_site_feed(events, now_sec, sites, limit=args.sites_limit)
+
+    events = dedupe_event_sources(events)
+
     if not events:
         print("Error: upstream feed returned 0 active events", file=sys.stderr)
         return 1
@@ -705,7 +820,7 @@ def main() -> int:
         source_health.apply_source_health(
             events,
             args.source_health,
-            max_sources=max(1, args.max_sources),
+            max_sources=max(0, args.max_sources),
             probe_budget=max(0, args.probe_budget),
             do_probe=args.probe_sources and not args.dry_run,
             workers=max(1, args.probe_workers),
