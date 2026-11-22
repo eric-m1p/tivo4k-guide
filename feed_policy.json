@@ -215,7 +215,15 @@
     "status": {
       "ended_grace_sec": 1800
     },
-    "score_refresh_sec": 60
+    "score_refresh_sec": 60,
+    "images": {
+      "posters_enabled": true,
+      "prefer_team_logos": false,
+      "blocked_poster_hosts": [
+        "cinevid.sbs",
+        "raw.githubusercontent.com"
+      ]
+    }
   },
   "config": {
     "sites": {
