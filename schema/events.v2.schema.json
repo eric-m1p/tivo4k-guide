@@ -224,7 +224,26 @@
           "description": "ESPN scoreboard URLs by league key, for apps that refresh scores between feed runs.",
           "additionalProperties": { "type": "string", "pattern": "^https://" }
         },
-        "score_refresh_sec": { "type": "integer", "minimum": 0 }
+        "scoreboards_disabled": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "ESPN league keys disabled from scoreboard matching and client polling."
+        },
+        "score_refresh_sec": { "type": "integer", "minimum": 0 },
+        "images": {
+          "type": "object",
+          "description": "Poster and artwork controls applied by the pipeline before publishing events.json.",
+          "properties": {
+            "posters_enabled": { "type": "boolean", "description": "Master switch; false clears all upstream poster_url values." },
+            "prefer_team_logos": { "type": "boolean", "description": "Clear poster_url when an event already has ESPN team logos." },
+            "blocked_poster_hosts": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Hostnames whose posters are stripped (also matches proxy target ?url= hosts such as wsrv.nl)."
+            }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

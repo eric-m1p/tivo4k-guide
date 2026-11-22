@@ -229,6 +229,61 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(v2.validate(payload), [])
         self.assertIn("ncaam", payload["policy"]["scoreboards"])
 
+    def test_image_policy_blocks_direct_and_proxied_hosts_and_supports_toggles(self):
+        e_cinevid = ev("USC vs Maryland", "American Football", "NCAAF", key="ev:1")
+        e_cinevid["poster_url"] = "https://cinevid.sbs/img/cfb-1.png"
+
+        e_aura = ev("Pitt vs Louisville", "American Football", "NCAAF", key="ev:2")
+        e_aura["poster_url"] = "https://wsrv.nl/?url=https://auracdn.pages.dev/espn-2.png"
+
+        e_good_proxy = ev("Georgia vs South Carolina", "American Football", "NCAAF", key="ev:3")
+        e_good_proxy["poster_url"] = "https://wsrv.nl/?url=https%3A%2F%2Fm.media-amazon.com%2Fimages%2Fbox.png"
+        e_good_proxy["teams"] = [
+            {"name": "Georgia", "logo": "https://a.espncdn.com/g.png"},
+            {"name": "South Carolina", "logo": "https://a.espncdn.com/sc.png"},
+        ]
+
+        policy = v2.load_policy()
+        policy["policy"]["images"] = {
+            "posters_enabled": True,
+            "prefer_team_logos": False,
+            "blocked_poster_hosts": ["cinevid.sbs", "auracdn.pages.dev"],
+        }
+        payload = v2.finalize([e_cinevid, e_aura, e_good_proxy], NOW, policy)
+        by_key = {e["canonical_key"]: e for e in payload["events"]}
+        self.assertEqual(by_key["ev:1"]["poster_url"], "")
+        self.assertEqual(by_key["ev:2"]["poster_url"], "")
+        self.assertIn("m.media-amazon.com", by_key["ev:3"]["poster_url"])
+        self.assertEqual(v2.validate(payload), [])
+
+        # prefer_team_logos clears poster_url on events that have both ESPN team logos
+        policy["policy"]["images"]["prefer_team_logos"] = True
+        payload2 = v2.finalize([e_good_proxy], NOW, policy)
+        self.assertEqual(payload2["events"][0]["poster_url"], "")
+
+        # posters_enabled: False clears all posters even without team logos
+        e_plain = ev("Fight Night", "Boxing", "Boxing", key="ev:4")
+        e_plain["poster_url"] = "https://static.ppvservices.st/good.jpg"
+        policy["policy"]["images"]["posters_enabled"] = False
+        payload3 = v2.finalize([e_plain], NOW, policy)
+        self.assertEqual(payload3["events"][0]["poster_url"], "")
+
+    def test_scoreboards_disabled_and_overrides_respected(self):
+        policy = v2.load_policy()
+        policy["policy"]["scoreboards_disabled"] = ["uel", "ligue1"]
+        policy["policy"]["scoreboards"] = {
+            "ncaaf": "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?limit=400",
+        }
+        payload = v2.finalize(run([ev("Lakers vs Celtics", "Basketball", "NBA")]), NOW, policy)
+        boards = payload["policy"]["scoreboards"]
+        self.assertNotIn("uel", boards)
+        self.assertNotIn("ligue1", boards)
+        self.assertEqual(
+            boards["ncaaf"],
+            "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?limit=400",
+        )
+        self.assertEqual(v2.validate(payload), [])
+
 
 if __name__ == "__main__":
     unittest.main()

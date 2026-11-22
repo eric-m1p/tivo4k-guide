@@ -636,8 +636,67 @@ LEAGUE_LABELS = {
 }
 
 
-def scoreboard_url(league: str) -> str:
+def scoreboard_url(league: str, overrides: dict[str, str] | None = None) -> str:
+    if overrides and isinstance(overrides.get(league), str) and overrides[league].startswith("https://"):
+        return overrides[league]
     return f"{ESPN}/{SCOREBOARDS[league][0]}"
+
+
+def resolved_scoreboards(policy: dict | None = None) -> dict[str, str]:
+    pol = (policy or {}).get("policy") or {}
+    disabled = {str(k).strip().lower() for k in (pol.get("scoreboards_disabled") or []) if str(k).strip()}
+    overrides = pol.get("scoreboards") if isinstance(pol.get("scoreboards"), dict) else {}
+    out: dict[str, str] = {}
+    for league in SCOREBOARDS:
+        if league.lower() in disabled:
+            continue
+        out[league] = scoreboard_url(league, overrides)
+    for league, url in overrides.items():
+        lk = str(league).strip()
+        if not lk or lk.lower() in disabled or lk in out:
+            continue
+        if isinstance(url, str) and url.startswith("https://"):
+            out[lk] = url
+    return out
+
+
+def poster_hosts(url: str) -> set[str]:
+    hosts: set[str] = set()
+    raw = str(url or "").strip()
+    if not raw:
+        return hosts
+    try:
+        parsed = urllib.parse.urlparse(raw)
+        if parsed.hostname:
+            hosts.add(parsed.hostname.lower())
+        qs = urllib.parse.parse_qs(parsed.query)
+        for key in ("url", "src", "img", "image"):
+            for val in qs.get(key) or []:
+                inner = urllib.parse.urlparse(val if "://" in val else f"https://{val}")
+                if inner.hostname:
+                    hosts.add(inner.hostname.lower())
+    except Exception:
+        pass
+    return hosts
+
+
+def apply_image_policy(ev: dict, images_cfg: dict | None) -> bool:
+    """Clear poster_url per policy.images rules. Returns True if cleared."""
+    if not isinstance(images_cfg, dict) or not ev.get("poster_url"):
+        return False
+    if images_cfg.get("posters_enabled") is False:
+        ev["poster_url"] = ""
+        return True
+    if images_cfg.get("prefer_team_logos") is True:
+        teams = ev.get("teams") or []
+        if len(teams) >= 2 and all(isinstance(t, dict) and t.get("logo") for t in teams):
+            ev["poster_url"] = ""
+            return True
+    blocked = {str(h).strip().lower() for h in (images_cfg.get("blocked_poster_hosts") or []) if str(h).strip()}
+    if blocked and (poster_hosts(ev["poster_url"]) & blocked):
+        ev["poster_url"] = ""
+        return True
+    return False
 
 
 def _get_json(url: str, timeout: int = 12):
@@ -688,15 +747,16 @@ def parse_scoreboard(league: str, raw: dict) -> list[dict]:
     return out
 
 
-def fetch_scoreboards(now_sec: int, leagues: list[str] | None = None, fetch=_get_json) -> list[dict]:
+def fetch_scoreboards(now_sec: int, leagues: list[str] | None = None, fetch=_get_json, policy: dict | None = None) -> list[dict]:
     # ESPN days are US days and it rejects date ranges: ask for yesterday, today, tomorrow (ET).
     et_today = datetime.datetime.fromtimestamp(now_sec - 5 * 3600, datetime.timezone.utc)
     days = [f"{et_today + datetime.timedelta(days=d):%Y%m%d}" for d in (-1, 0, 1)]
-    leagues = leagues or list(SCOREBOARDS)
+    boards_map = resolved_scoreboards(policy)
+    leagues = leagues or [lg for lg in boards_map if lg in SCOREBOARDS]
 
     def one(job: tuple[str, str]) -> list[dict]:
         league, day = job
-        url = scoreboard_url(league)
+        url = boards_map.get(league) or scoreboard_url(league)
         url += ("&" if "?" in url else "?") + f"dates={day}"
         try:
             return parse_scoreboard(league, fetch(url))
@@ -844,7 +904,7 @@ def classify(ev: dict, now_sec: int) -> None:
         ev["category"] = SPORT_NAMES[sport]
 
 
-def enrich(events: list[dict], now_sec: int, *, scoreboards: bool = True, time_label=None, ident=None, fetch=_get_json) -> list[dict]:
+def enrich(events: list[dict], now_sec: int, *, scoreboards: bool = True, time_label=None, ident=None, fetch=_get_json, policy: dict | None = None) -> list[dict]:
     for ev in events:
         if ev.get("status") != "always_live":
             ev["title"] = clean_title(ev.get("title", "")) or ev.get("title", "")
@@ -854,7 +914,8 @@ def enrich(events: list[dict], now_sec: int, *, scoreboards: bool = True, time_l
     events = dedupe_events(events)
     move_wrong_game_sources(events)
     if scoreboards:
-        events = apply_scoreboards(events, fetch_scoreboards(now_sec, fetch=fetch), now_sec, time_label)
+        pol = policy if policy is not None else (load_policy() if os.path.exists(POLICY_PATH) else None)
+        events = apply_scoreboards(events, fetch_scoreboards(now_sec, fetch=fetch, policy=pol), now_sec, time_label)
     flag_shared_channels(events, ident)
     return [e for e in events if e.get("sources")]
 
@@ -878,6 +939,8 @@ def finalize(events: list[dict], now_sec: int, policy: dict | None = None) -> di
     enabled = {k: bool(v.get("enabled", True)) for k, v in policy["config"]["sites"].items()}
     out_events = []
     killed = 0
+    images_cfg = policy["policy"].get("images") if isinstance(policy["policy"].get("images"), dict) else None
+    posters_cleared = 0
     for ev in events:
         if "sport" not in ev:
             classify(ev, now_sec)
@@ -911,6 +974,8 @@ def finalize(events: list[dict], now_sec: int, policy: dict | None = None) -> di
         for key in ("starts_at_iso", "time_label", "score_summary", "poster_url", "league", "category", "detail"):
             if ev.get(key) is None:
                 ev[key] = ""
+        if apply_image_policy(ev, images_cfg):
+            posters_cleared += 1
         for key in ("starts_at", "ends_at", "updated_at"):
             ev[key] = max(0, int(ev.get(key) or 0))
         if not ev.get("aliases"):
@@ -920,7 +985,9 @@ def finalize(events: list[dict], now_sec: int, policy: dict | None = None) -> di
         out_events.append(ev)
     if killed:
         log(f"config: dropped {killed} sources from disabled sites")
-    policy["policy"]["scoreboards"] = {k: scoreboard_url(k) for k in SCOREBOARDS}
+    if posters_cleared:
+        log(f"images: cleared {posters_cleared} posters per policy.images")
+    policy["policy"]["scoreboards"] = resolved_scoreboards(policy)
     return {
         "schema_version": SCHEMA_VERSION,
         "synced_at": now_sec,

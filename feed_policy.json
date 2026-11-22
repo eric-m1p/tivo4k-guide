@@ -216,12 +216,14 @@
       "ended_grace_sec": 1800
     },
     "score_refresh_sec": 60,
+    "scoreboards_disabled": [],
     "images": {
       "posters_enabled": true,
       "prefer_team_logos": false,
       "blocked_poster_hosts": [
         "cinevid.sbs",
-        "raw.githubusercontent.com"
+        "raw.githubusercontent.com",
+        "thumbs.poocloud.in"
       ]
     }
   },
