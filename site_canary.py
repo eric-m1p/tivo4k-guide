@@ -110,17 +110,19 @@ def update(state: dict, rows: dict[str, int], site_probe: dict[str, dict],
             and int(probe.get("server_blocked") or 0) < int(probe.get("probed") or 0)
         )
         play_dead = (int(probe.get("play_tried") or 0) >= 3 and not int(probe.get("played") or 0)) or page_dead
-        apps_dead = int(app.get("fail") or 0) >= 3 and not int(app.get("ok") or 0)
+        apps_ok = int(app.get("ok") or 0)
+        apps_dead = int(app.get("fail") or 0) >= 3 and not apps_ok
 
         s["bad_runs"] = s.get("bad_runs", 0) + 1 if empty else 0
-        s["play_bad_runs"] = s.get("play_bad_runs", 0) + 1 if play_dead else 0
+        # Real devices succeeding overrides datacenter runner playback refusals.
+        s["play_bad_runs"] = (s.get("play_bad_runs", 0) + 1) if (play_dead and not apps_ok) else 0
         if n is not None and not empty:
             # An outage's zeros stay out of the history, so the usual count holds until it recovers.
             history.append(n)
             s["rows"] = history[-keep:]
             s["last_rows"] = n
             s["baseline"] = baseline
-        played = int(probe.get("played") or 0) or int(app.get("ok") or 0)
+        played = int(probe.get("played") or 0) or apps_ok
         if (n or 0) > 0 and (played or not play_dead):
             s["last_success"] = now
         s["probe"] = probe
@@ -139,7 +141,7 @@ def update(state: dict, rows: dict[str, int], site_probe: dict[str, dict],
                 f"nothing plays: {probe.get('play_tried', 0)} playback checks, "
                 f"apps {app.get('fail', 0)} fails / 0 ok in 24 h"
             )
-        elif s["play_bad_runs"] >= need:
+        elif s["play_bad_runs"] >= need and not apps_ok:
             status, reason = "check", f"no playback from the runner for {s['play_bad_runs']} runs (apps: no verdict)"
         elif low:
             status, reason = "check", f"{n} rows vs usual ~{baseline:g}"

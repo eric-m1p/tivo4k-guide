@@ -751,8 +751,8 @@ def main() -> int:
     parser.add_argument(
         "--max-sources",
         type=int,
-        default=0,
-        help="max sources kept per event (0 = no cap: ranked by measured quality, dead mirrors dropped)",
+        default=None,
+        help="max sources kept per event (default: policy.health.max_sources_per_event; 0 = uncapped)",
     )
     parser.add_argument(
         "--scoreboards",
@@ -882,10 +882,16 @@ def main() -> int:
         if quality_budget is None:
             enabled = playback_policy.get("enabled", True)
             quality_budget = int(playback_policy.get("budget_per_run", 40)) if enabled else 0
+        health_policy = policy["policy"].get("health") or {}
+        max_sources = (
+            args.max_sources
+            if args.max_sources is not None
+            else int(health_policy.get("max_sources_per_event", source_health.MAX_SOURCES_PER_EVENT))
+        )
         health_stats = source_health.apply_source_health(
             events,
             args.source_health,
-            max_sources=max(0, args.max_sources),
+            max_sources=max(0, max_sources),
             probe_budget=max(0, args.probe_budget),
             do_probe=do_probe,
             workers=max(1, args.probe_workers),

@@ -145,7 +145,12 @@
             "quarantine_hours": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
             "quarantine_vantages": { "type": "integer", "minimum": 1, "description": "Quarantine when this many vantage points each failed within fail_memory_hours." },
             "fail_memory_hours": { "type": "integer", "minimum": 1, "description": "How long an on-device failure counts against a source." },
-            "app_weight": { "type": "number", "minimum": 0, "description": "Weight of app playback results against probe results (probes weigh 1)." }
+            "app_weight": { "type": "number", "minimum": 0, "description": "Weight of app playback results against probe results (probes weigh 1)." },
+            "scan_weight": { "type": "number", "minimum": 0, "description": "Weight of background on-device source_scan checks (below real playback)." },
+            "host_half_life_days": { "type": "number", "minimum": 1, "description": "Exponential decay half-life (days) for host/family reliability stats." },
+            "url_half_life_hours": { "type": "number", "minimum": 1, "description": "Exponential decay half-life (hours) for per-URL reliability stats." },
+            "max_sources_per_event": { "type": "integer", "minimum": 0, "description": "Maximum sources published per live/future event (0 = uncapped)." },
+            "max_sources_247": { "type": "integer", "minimum": 0, "description": "Maximum sources published per always_live 24/7 channel (0 = uncapped)." }
           },
           "additionalProperties": false
         },
@@ -176,7 +181,8 @@
                 "per_run": { "type": "integer", "minimum": 0, "description": "Stream URLs probed per run." },
                 "every_hours": { "type": "integer", "minimum": 1, "description": "A URL is probed at most once in this many hours." },
                 "demote_after_fails": { "type": "integer", "minimum": 1, "description": "Failures in a row before a URL sorts after its channel's healthy sources." },
-                "timeout_sec": { "type": "integer", "minimum": 2 }
+                "timeout_sec": { "type": "integer", "minimum": 2 },
+                "failure_trust_threshold": { "type": "number", "minimum": 0, "maximum": 1, "description": "Ignore batch failures when more than this share of a channel probe batch fails." }
               },
               "additionalProperties": false
             }

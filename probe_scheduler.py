@@ -75,9 +75,13 @@ def plan_probes(events: list[dict], state: dict, now: int, *,
         return now - int(probed.get(url_key(url)) or 0) >= every
 
     def ranked(event: dict) -> list[str]:
+        ordered = sh.ranked_sources(event.get("sources") or [], state, now, blocklist=blocklist)
+        # Host-interleave per event so top_n page & playback probes cover distinct
+        # CDNs instead of probing 4 clones on the same host.
+        items = [{"src": src, "host": sh.host_of(str(src.get("url") or ""))} for src in ordered]
         return [
-            str(src.get("url") or "").strip()
-            for src in sh.ranked_sources(event.get("sources") or [], state, now, blocklist=blocklist)
+            str(item["src"].get("url") or "").strip()
+            for item in sh._interleave_by_host(items)
         ]
 
     window = sorted(

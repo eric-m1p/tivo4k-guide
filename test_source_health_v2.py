@@ -214,6 +214,13 @@ class Canary(unittest.TestCase):
         self.run_rows(state, [20] * 6, probe=dead, apps={"ok": 0, "fail": 4})
         self.assertEqual(state["sites"]["isportsurge"]["status"], "down")
 
+    def test_apps_playing_overrides_runner_playback_failure(self):
+        dead = {"probed": 6, "ok": 6, "play_tried": 4, "played": 0}
+        state = fresh()
+        self.run_rows(state, [20] * 6, probe=dead, apps={"ok": 2, "fail": 0})
+        self.assertEqual(state["sites"]["isportsurge"]["status"], "ok")
+        self.assertEqual(state["sites"]["isportsurge"]["play_bad_runs"], 0)
+
     def test_manual_disable_wins(self):
         state = fresh()
         self.run_rows(state, [20] * 10 + [0, 0, 0])
@@ -298,6 +305,178 @@ class PlaylistFetch(unittest.TestCase):
         self.assertTrue(sh.is_disabled(src["https://d.example/1"], NOW))
         src["https://a.example/1"].update({"last_status": "manifest-403", "fail": 5})
         self.assertEqual(sh._forgive_manifest_failures(state), 0)  # runs once
+
+
+class LongTermRankingAndTelemetry(unittest.TestCase):
+    def test_url_family_normalizes_ephemeral_segments(self):
+        self.assertEqual(
+            sh.url_family("https://amazon.com.getsugatensho.sbs/beta?p=abc123token"),
+            "amazon.com.getsugatensho.sbs/beta",
+        )
+        self.assertEqual(
+            sh.url_family("https://taifood-blog.asia/embed/cfb/2026-11-21/ark-tex/skycast"),
+            "taifood-blog.asia/embed/cfb/{date}",
+        )
+        self.assertEqual(
+            sh.url_family("https://104game.click/player/2/138"),
+            "104game.click/player/{n}/{n}",
+        )
+        self.assertEqual(
+            sh.url_family("https://live6.totalsportek.gives/Amari-Jones-vs-DeAundre-Pettus/81392"),
+            "live6.totalsportek.gives/{slug}/{n}",
+        )
+
+    def test_page_200_never_beats_proven_app_history(self):
+        state = {
+            "sources": {},
+            "hosts": {
+                "good.example": {"ok": 50, "fail": 5, "updated_at": NOW},
+                "dead.example": {"ok": 0, "fail": 20, "updated_at": NOW},
+            },
+        }
+        good_src = {"url": "https://good.example/game/1", "label": "Stream 1"}
+        dead_src = {"url": "https://dead.example/beta?p=xyz", "label": "Stream 1"}
+        k_good = sh._selection_key(good_src, {}, None, None, {}, state, 1, now=NOW)
+        k_dead = sh._selection_key(dead_src, {}, {"ok": True, "latency_ms": 50}, True, {}, state, 0, now=NOW)
+        self.assertLess(k_good, k_dead)
+        self.assertTrue(sh.is_weak_source(dead_src, {}, True, state=state, now=NOW))
+        self.assertFalse(sh.is_weak_source(good_src, {}, None, state=state, now=NOW))
+
+    def test_host_interleaving_prevents_same_host_clumping(self):
+        state = {"sources": {}, "hosts": {}}
+        raw = [
+            {"url": "https://a.example/1", "label": "HD"},
+            {"url": "https://a.example/2", "label": "HD"},
+            {"url": "https://a.example/3", "label": "HD"},
+            {"url": "https://b.example/1", "label": "HD"},
+            {"url": "https://c.example/1", "label": "HD"},
+        ]
+        cands = [
+            {
+                "src": s,
+                "host": sh.host_of(s["url"]),
+                "ok": True,
+                "weak": False,
+                "key": sh._selection_key(s, {}, None, True, {}, state, i, now=NOW),
+            }
+            for i, s in enumerate(raw)
+        ]
+        selected = sh._select_best_sources(cands, limit=4)
+        hosts = [sh.host_of(s["url"]) for s in selected]
+        self.assertEqual(hosts, ["a.example", "b.example", "c.example", "a.example"])
+
+    def test_bad_host_does_not_cut_ahead_of_second_good_mirror(self):
+        state = {
+            "sources": {},
+            "hosts": {
+                "good.example": {"ok": 40, "fail": 2, "updated_at": NOW},
+                "dead.example": {"ok": 0, "fail": 20, "updated_at": NOW},
+            },
+        }
+        raw = [
+            {"url": "https://good.example/1", "label": "HD"},
+            {"url": "https://good.example/2", "label": "HD"},
+            {"url": "https://dead.example/1", "label": "HD"},
+        ]
+        cands = [
+            {
+                "src": s,
+                "host": sh.host_of(s["url"]),
+                "ok": None,
+                "weak": False,
+                "key": sh._selection_key(s, {}, None, None, {}, state, i, now=NOW),
+            }
+            for i, s in enumerate(raw)
+        ]
+        selected = sh._select_best_sources(cands, limit=3)
+        self.assertEqual([sh.host_of(s["url"]) for s in selected], ["good.example", "good.example", "dead.example"])
+
+    def test_time_decay_fades_stale_host_failures(self):
+        stale = {"hosts": {"old.example": {"ok": 0, "fail": 20, "updated_at": NOW - 60 * 86400}}}
+        fresh_bad = {"hosts": {"old.example": {"ok": 0, "fail": 20, "updated_at": NOW}}}
+        s_stale = sh.health_score({}, stale, "https://old.example/1", now=NOW)
+        s_fresh = sh.health_score({}, fresh_bad, "https://old.example/1", now=NOW)
+        self.assertGreater(s_stale, 0.45)
+        self.assertLess(s_fresh, 0.25)
+
+    def test_telemetry_ingest_accepts_source_url_per_file_cursors_and_scans(self):
+        ch_url = "https://cdn.example/live/ch1.m3u8"
+        t_now = sh._iso_epoch("2026-11-21T20:05:00Z")
+        state = {
+            "version": 1,
+            "sources": {},
+            "channels": {"urls": {sh._channel_url_key(ch_url): {"demoted": True, "fail_streak": 3}}},
+        }
+        # Desktop writes a newer timestamp first
+        res1 = sh.ingest_telemetry_rows(state, {
+            "telemetry/slang-darwin.jsonl": [
+                {
+                    "ts": "2026-11-21T20:00:00Z", "type": "source_result",
+                    "device_id": "mac-1", "url": "https://x.example/live/1",
+                    "source_host": "x.example", "ok": False,
+                },
+            ],
+        }, now=t_now)
+        self.assertEqual(res1["rows"], 1)
+        # TiVo flushes delayed older rows using Android TV's `source_url` + `device_id`
+        res2 = sh.ingest_telemetry_rows(state, {
+            "telemetry/slang-darwin.jsonl": [
+                {
+                    "ts": "2026-11-21T20:00:00Z", "type": "source_result",
+                    "device_id": "mac-1", "url": "https://x.example/live/1",
+                    "source_host": "x.example", "ok": False,
+                },
+            ],
+            "telemetry/tivo-abc.jsonl": [
+                {
+                    "ts": "2026-11-21T19:30:00Z", "type": "source_result",
+                    "device_id": "tivo-abc", "source_url": "https://x.example/live/1",
+                    "host": "x.example", "ok": False,
+                },
+                {
+                    "ts": "2026-11-21T19:31:00Z", "type": "source_scan",
+                    "device_id": "tivo-abc", "source_url": "https://scan.example/1",
+                    "host": "scan.example", "ok": False,
+                },
+                {
+                    "ts": "2026-11-21T19:32:00Z", "type": "source_result",
+                    "device_id": "tivo-abc", "source_url": ch_url,
+                    "host": "cdn.example", "ok": True,
+                },
+            ],
+        }, now=t_now)
+        # All 3 delayed TiVo rows were ingested despite older timestamp than mac-1!
+        self.assertEqual(res2["rows"], 3)
+        # Two distinct vantages (mac-1 + tivo-abc) quarantined https://x.example/live/1
+        self.assertTrue(sh.is_disabled(state["sources"]["https://x.example/live/1"], t_now))
+        # source_scan failure did NOT quarantine or poison host counts
+        scan_ent = state["sources"]["https://scan.example/1"]
+        self.assertFalse(sh.is_disabled(scan_ent, t_now))
+        self.assertEqual(scan_ent["scan_fail"], 1.0)
+        self.assertEqual(state["hosts"]["scan.example"]["fail"], 0.0)
+        # Channel app success lifted demotion
+        self.assertFalse(state["channels"]["urls"][sh._channel_url_key(ch_url)]["demoted"])
+
+    def test_qoe_no_audio_scores_below_clean_watch(self):
+        state = fresh()
+        sh.record_app_result(state, "https://a.example/clean", "tv1", True, NOW, NOW, audio_ok=True)
+        sh.record_app_result(state, "https://a.example/muted", "tv1", True, NOW, NOW, reason="video_no_audio", audio_ok=False)
+        self.assertGreater(
+            sh.health_score(state["sources"]["https://a.example/clean"], state, "https://a.example/clean", now=NOW),
+            sh.health_score(state["sources"]["https://a.example/muted"], state, "https://a.example/muted", now=NOW),
+        )
+
+    def test_scheduler_probes_diverse_hosts_first(self):
+        ev = {
+            "canonical_key": "ev1", "status": "live", "starts_at": NOW - H, "ends_at": 0,
+            "sources": [
+                {"url": "https://h1.example/1", "label": "HD", "origin": "PPV", "kind": "embed"},
+                {"url": "https://h1.example/2", "label": "HD", "origin": "PPV", "kind": "embed"},
+                {"url": "https://h2.example/1", "label": "HD", "origin": "PPV", "kind": "embed"},
+            ],
+        }
+        plan = probe_scheduler.plan_probes([ev], fresh(), NOW, policy={"budget_per_hour": 100, "top_n": 2})
+        self.assertEqual(plan["page"][:2], ["https://h1.example/1", "https://h2.example/1"])
 
 
 if __name__ == "__main__":

@@ -30,7 +30,15 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULTS = {"enabled": True, "per_run": 40, "every_hours": 24, "demote_after_fails": 3, "timeout_sec": 8}
+DEFAULTS = {
+    "enabled": True,
+    "per_run": 40,
+    "every_hours": 24,
+    "demote_after_fails": 3,
+    "timeout_sec": 8,
+    "failure_trust_threshold": 0.65,
+}
+TRUST_MIN_SAMPLE = 10
 UA = "Mozilla/5.0 (Linux; Android 12; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 CTX = ssl.create_default_context()
 
@@ -199,13 +207,25 @@ def main() -> int:
     with cf.ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
         results = list(ex.map(lambda s: probe(s, timeout), sample))
     threshold = max(1, int(policy["demote_after_fails"]))
+    failed_count = sum(1 for ok, _ in results if not ok)
+    trust_limit = float(policy.get("failure_trust_threshold", DEFAULTS["failure_trust_threshold"]))
+    trusted = len(results) < TRUST_MIN_SAMPLE or (failed_count / len(results)) <= trust_limit
+    if not trusted:
+        print(
+            f"[channels] WARNING: {failed_count}/{len(results)} probes failed "
+            f"({failed_count / len(results):.0%}); ignoring failures this run",
+            flush=True,
+        )
     for src, (ok, detail) in zip(sample, results):
+        if not ok and not trusted:
+            continue
         record(urls, src, ok, detail, now, threshold)
     pruned = prune(urls, channels)
     changed = reorder(channels, urls)
     block["last_run"] = now
     block["stats"] = {
         "probed": len(sample), "ok": sum(1 for ok, _ in results if ok),
+        "trusted": trusted,
         "demoted": sum(1 for r in urls.values() if r.get("demoted")),
         "down_channels": sum(1 for c in channels if c.get("down")),
         "tracked": len(urls), "pruned": pruned, "reordered": changed,

@@ -89,6 +89,23 @@ class MainTest(unittest.TestCase):
             doc = json.load(open(paths["channels"]))
             self.assertEqual([s["url"] for s in doc["channels"][0]["sources"]], ["https://a2", "https://a1"])
 
+    def test_untrusted_batch_ignores_failures(self):
+        with tempfile.TemporaryDirectory() as d:
+            paths = {k: os.path.join(d, k + ".json") for k in ("channels", "state", "policy")}
+            channels = [ch(f"C{i}", f"https://c{i}.example/live.m3u8") for i in range(12)]
+            json.dump({"v": 1, "channels": channels}, open(paths["channels"], "w"))
+            json.dump({"version": 1, "sources": {}}, open(paths["state"], "w"))
+            json.dump({"policy": {"probe": {"channels": {"per_run": 12, "demote_after_fails": 1, "failure_trust_threshold": 0.65}}}}, open(paths["policy"], "w"))
+            argv = ["channel_health.py"] + [f"--{k}={v}" for k, v in paths.items()]
+            # 10/12 fail (83% > 65%) -> runner outage, must not demote anything
+            fake = lambda src, timeout=8: (src["channel"] in ("C0", "C1"), "fake")
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(chh, "probe", fake):
+                self.assertEqual(chh.main(), 0)
+            state = json.load(open(paths["state"]))
+            self.assertFalse(state["channels"]["stats"]["trusted"])
+            self.assertEqual(state["channels"]["stats"]["demoted"], 0)
+            self.assertEqual(state["channels"]["stats"]["down_channels"], 0)
+
 
 class AltsTest(unittest.TestCase):
     def test_match_filter_and_cap(self):

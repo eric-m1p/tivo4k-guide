@@ -37,7 +37,12 @@
       "quarantine_hours": [6, 12, 24, 72],
       "quarantine_vantages": 2,
       "fail_memory_hours": 24,
-      "app_weight": 3
+      "app_weight": 3,
+      "scan_weight": 0.5,
+      "host_half_life_days": 7,
+      "url_half_life_hours": 48,
+      "max_sources_per_event": 12,
+      "max_sources_247": 4
     },
     "probe": {
       "budget_per_hour": 1200,
@@ -46,7 +51,7 @@
       "top_n": 4,
       "always_on_every_hours": 6,
       "playback": { "enabled": true, "budget_per_run": 40, "timeout_sec": 14, "recheck_min": 90 },
-      "channels": { "enabled": true, "per_run": 40, "every_hours": 24, "demote_after_fails": 3, "timeout_sec": 8 }
+      "channels": { "enabled": true, "per_run": 40, "every_hours": 24, "demote_after_fails": 3, "timeout_sec": 8, "failure_trust_threshold": 0.65 }
     },
     "canary": { "min_yield_ratio": 0.2, "baseline_runs": 48, "bad_runs": 3, "alert": "github_issue", "backoff_after_runs": 2, "backoff_max_min": 240 },
     "weak_source": { "min_sources": 3, "min_height": 720 },

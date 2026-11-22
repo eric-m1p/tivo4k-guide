@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Persistent source health for the Stream Sites TV feed.
+"""Persistent source health for the Slang feed.
 
 The feed frequently carries 10-60 mirrors for one event. Most are duplicates or
 dead hosts, and trying them in order wastes the first minutes of playback. This
 module:
 
 - probes candidate embed URLs before events.json is published;
-- keeps a committed history (`source_health.json`) of ok/fail streaks;
-- ranks healthy, higher-quality mirrors first and caps each event at
-  `MAX_SOURCES_PER_EVENT`;
+- keeps a committed history (`source_health.json`) of time-decayed URL,
+  stream-family, and host reliability plus vantage streaks;
+- ranks healthy, higher-quality mirrors first with host-interleaved failover
+  order and caps each event at `MAX_SOURCES_PER_EVENT`;
 - quarantines a URL after repeated failures and retries it after a cooldown;
 - permanently blocks URLs after definitive 404/410s or too many failed cycles,
   plus an optional manual `source_blocklist.json`.
@@ -21,6 +22,7 @@ results are not applied, so a bad network path cannot gut the feed.
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import json
 import os
@@ -33,7 +35,7 @@ from urllib.parse import quote, urlencode, urljoin
 
 DEFAULT_STATE = "source_health.json"
 DEFAULT_BLOCKLIST = "source_blocklist.json"
-MAX_SOURCES_PER_EVENT = 8
+MAX_SOURCES_PER_EVENT = 12
 MAX_SOURCES_247 = 4
 PROBE_BUDGET = 3000
 PROBE_WORKERS = 32
@@ -41,22 +43,27 @@ PROBE_TIMEOUT = 8
 PROBE_BODY_LIMIT = 64 * 1024
 MANIFEST_LIMIT = 96 * 1024
 CANDIDATE_POOL = 16
-# Uncapped mode: every good mirror is published; weak ones (dead now, measured or
-# labelled below 720p, or mostly failing) only fill an event up to this many.
+# Weak mirrors (dead now, measured or labelled below 720p, or mostly failing)
+# only fill an event up to this many.
 MIN_SOURCES_PER_EVENT = 3
 LOW_QUALITY_HEIGHT = 720
 DISABLE_STREAK = 3
 DISABLE_TOTAL = 8
 QUARANTINE_HOURS = (6, 12, 24, 72)
-# Source health v2: a quarantine needs DISABLE_STREAK failures in a row from one
+# Source health v2+: a quarantine needs DISABLE_STREAK failures in a row from one
 # vantage point (the CI runner, or one device) or failures from QUARANTINE_VANTAGES
 # vantage points within FAIL_MEMORY_HOURS. App playback outweighs probes.
 QUARANTINE_VANTAGES = 2
 FAIL_MEMORY_HOURS = 24
 FAIL_OMIT = 3
 APP_WEIGHT = 3.0
-PAGE_WEIGHT = 0.5
+SCAN_WEIGHT = 0.5
+HOST_WEIGHT = 2.0
+FAMILY_WEIGHT = 1.0
+PAGE_WEIGHT = 0.35
 PLAYBACK_WEIGHT = 1.0
+HOST_HALF_LIFE_DAYS = 7.0
+URL_HALF_LIFE_HOURS = 48.0
 CI_VANTAGE = "ci"
 # The runner was refused, which says nothing about viewers: never a failure on
 # its own, only alongside a recent app failure.
@@ -66,7 +73,8 @@ SERVER_BLOCKED_STATUSES = {"401", "403", "407", "429", "451", "manifest-403"}
 def _load_policy_thresholds() -> None:
     """Thresholds ship in feed_policy.json (the feed's policy block); constants above are fallbacks."""
     global MIN_SOURCES_PER_EVENT, LOW_QUALITY_HEIGHT, DISABLE_STREAK, DISABLE_TOTAL, QUARANTINE_HOURS
-    global QUARANTINE_VANTAGES, FAIL_MEMORY_HOURS, FAIL_OMIT, APP_WEIGHT
+    global QUARANTINE_VANTAGES, FAIL_MEMORY_HOURS, FAIL_OMIT, APP_WEIGHT, SCAN_WEIGHT
+    global HOST_HALF_LIFE_DAYS, URL_HALF_LIFE_HOURS, MAX_SOURCES_PER_EVENT, MAX_SOURCES_247
     here = os.path.dirname(os.path.abspath(__file__))
     policy = None
     # guide-repo keeps the file next to this module; the iptv/ copy reads guide-repo's.
@@ -89,6 +97,13 @@ def _load_policy_thresholds() -> None:
     FAIL_MEMORY_HOURS = int(health.get("fail_memory_hours", FAIL_MEMORY_HOURS))
     FAIL_OMIT = int(health.get("fail_omit", FAIL_OMIT))
     APP_WEIGHT = float(health.get("app_weight", APP_WEIGHT))
+    SCAN_WEIGHT = float(health.get("scan_weight", SCAN_WEIGHT))
+    HOST_HALF_LIFE_DAYS = float(health.get("host_half_life_days", HOST_HALF_LIFE_DAYS))
+    URL_HALF_LIFE_HOURS = float(health.get("url_half_life_hours", URL_HALF_LIFE_HOURS))
+    if "max_sources_per_event" in health:
+        MAX_SOURCES_PER_EVENT = int(health["max_sources_per_event"])
+    if "max_sources_247" in health:
+        MAX_SOURCES_247 = int(health["max_sources_247"])
 
 
 _load_policy_thresholds()
@@ -265,12 +280,23 @@ def save_state(path: str | os.PathLike, state: dict, stats: dict) -> None:
     for url, entry in list(entries.items()):
         if entry.get("blocked"):
             continue
-        last = max(int(entry.get("last_ok") or 0), int(entry.get("last_fail") or 0))
+        last = max(
+            int(entry.get("last_ok") or 0),
+            int(entry.get("last_fail") or 0),
+            int(entry.get("app_last_ok") or 0),
+            int(entry.get("app_last_fail") or 0),
+            int(entry.get("last_play") or 0),
+            int(entry.get("last_play_fail") or 0),
+            int(entry.get("scan_last") or 0),
+        )
         if last < cutoff and int(entry.get("disabled_until") or 0) <= now:
             entries.pop(url, None)
         elif (int(entry.get("height") or 0) <= 0
               and int(entry.get("fail") or 0) <= 0
-              and not any(int(entry.get(k) or 0) > 0 for k in ("app_ok", "app_fail", "play_ok", "play_fail"))
+              and not any(
+                  float(entry.get(k) or 0) > 0
+                  for k in ("app_ok", "app_fail", "play_ok", "play_fail", "scan_ok", "scan_fail")
+              )
               and int(entry.get("disabled_until") or 0) <= now):
             entries.pop(url, None)
     # Hard cap keeps the committed JSON small even after months of churn.
@@ -287,6 +313,29 @@ def save_state(path: str | os.PathLike, state: dict, stats: dict) -> None:
             reverse=True,
         )
         state["sources"] = dict(ranked[:8000])
+    # Prune stale stream families and long-idle hosts.
+    families = state.get("families")
+    if isinstance(families, dict):
+        for fam, bucket in list(families.items()):
+            if not isinstance(bucket, dict) or _bucket_last_ts(bucket) < cutoff:
+                families.pop(fam, None)
+        if len(families) > 2000:
+            top_fam = sorted(
+                families.items(),
+                key=lambda kv: _bucket_last_ts(kv[1]),
+                reverse=True,
+            )
+            state["families"] = dict(top_fam[:2000])
+    hosts = state.get("hosts")
+    if isinstance(hosts, dict):
+        host_cutoff = now - max(KEEP_DAYS, 90) * 86400
+        for host, bucket in list(hosts.items()):
+            if not isinstance(bucket, dict):
+                hosts.pop(host, None)
+                continue
+            ts = _bucket_last_ts(bucket)
+            if ts > 0 and ts < host_cutoff:
+                hosts.pop(host, None)
     tmp = str(path) + ".tmp"
     Path(tmp).write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp, path)
@@ -331,6 +380,111 @@ def host_of(url: str) -> str:
         return ""
 
 
+_DATE_SEG_RE = re.compile(r"^20\d{2}-\d{2}-\d{2}$")
+_HEX_TOK_RE = re.compile(r"^[a-f0-9_-]{16,}$", re.I)
+_LONG_TOK_RE = re.compile(r"^[A-Za-z0-9_-]{24,}$")
+
+
+def url_family(url: str) -> str:
+    """Canonical stream family `(host, normalized_path_prefix)` for ephemeral URLs.
+
+    Strips query strings and collapses numeric IDs, dates, matchup slugs, and
+    opaque tokens so newly minted mirrors on the same player template inherit
+    their family's reliability record immediately.
+    """
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return ""
+        segs = [s for s in (parsed.path or "").split("/") if s]
+    except Exception:
+        return ""
+    norm: list[str] = []
+    for seg in segs[:3]:
+        low = seg.lower()
+        if _DATE_SEG_RE.match(low):
+            norm.append("{date}")
+        elif low.isdigit():
+            norm.append("{n}")
+        elif "-vs-" in low or low.count("-") >= 3:
+            norm.append("{slug}")
+        elif _HEX_TOK_RE.match(low) or _LONG_TOK_RE.match(seg):
+            norm.append("{tok}")
+        else:
+            norm.append(low)
+    return host + ("/" + "/".join(norm) if norm else "")
+
+
+def _bucket_last_ts(bucket: dict) -> int:
+    if not isinstance(bucket, dict):
+        return 0
+    ts = max(
+        int(bucket.get("updated_at") or 0),
+        int(bucket.get("last_ok") or 0),
+        int(bucket.get("last_fail") or 0),
+    )
+    if ts > 0:
+        return ts
+    seen = bucket.get("last_seen")
+    return _iso_epoch(seen) if seen else 0
+
+
+def _decay_factor(last_ts: int, now: int, half_life_sec: float) -> float:
+    if last_ts <= 0 or now <= 0 or now <= last_ts or half_life_sec <= 0:
+        return 1.0
+    age = now - last_ts
+    if age > half_life_sec * 30:
+        return 0.0
+    return 0.5 ** (age / half_life_sec)
+
+
+def _decayed_pair(
+    ok: float,
+    fail: float,
+    last_ok: int,
+    last_fail: int,
+    now: int,
+    half_life_sec: float,
+    fallback_ts: int = 0,
+) -> tuple[float, float]:
+    """Apply exponential time decay to an (ok, fail) count pair."""
+    if ok <= 0 and fail <= 0:
+        return 0.0, 0.0
+    if now <= 0 or half_life_sec <= 0:
+        return float(ok), float(fail)
+    ok_ts = last_ok or fallback_ts
+    fail_ts = last_fail or fallback_ts
+    d_ok = float(ok) * _decay_factor(ok_ts, now, half_life_sec) if ok > 0 else 0.0
+    d_fail = float(fail) * _decay_factor(fail_ts, now, half_life_sec) if fail > 0 else 0.0
+    return d_ok, d_fail
+
+
+def _update_decayed_bucket(
+    bucket: dict,
+    ok_delta: float,
+    fail_delta: float,
+    when: int,
+    half_life_sec: float,
+) -> None:
+    """Decay existing counts in a host/family bucket to `when`, then add deltas."""
+    prev_ts = _bucket_last_ts(bucket)
+    prev_ok = float(bucket.get("ok") or 0.0)
+    prev_fail = float(bucket.get("fail") or 0.0)
+    if prev_ts > 0 and when > prev_ts and half_life_sec > 0:
+        f = _decay_factor(prev_ts, when, half_life_sec)
+        prev_ok *= f
+        prev_fail *= f
+    bucket["ok"] = round(prev_ok + max(0.0, ok_delta), 3)
+    bucket["fail"] = round(prev_fail + max(0.0, fail_delta), 3)
+    bucket["updated_at"] = max(prev_ts, when)
+    if ok_delta > 0:
+        bucket["last_ok"] = max(int(bucket.get("last_ok") or 0), when)
+    if fail_delta > 0:
+        bucket["last_fail"] = max(int(bucket.get("last_fail") or 0), when)
+
+
 def is_manually_blocked(url: str, blocklist: dict) -> bool:
     if not blocklist:
         return False
@@ -351,8 +505,8 @@ def _host_rank(state: dict, url: str) -> tuple:
     info = hosts.get(host_of(url))
     if not isinstance(info, dict):
         return (0, 0.0, 0)
-    ok = int(info.get("ok") or 0)
-    fail = int(info.get("fail") or 0)
+    ok = float(info.get("ok") or 0)
+    fail = float(info.get("fail") or 0)
     total = ok + fail
     rate = (ok / total) if total >= 3 else 0.5
     height = int(info.get("height") or 0)
@@ -402,6 +556,15 @@ def _quality_score(src: dict, height: int) -> int:
     return {0: 4, 1: 3, 2: 1, 3: 0}.get(quality_rank(src), 1)
 
 
+def _reliability_tier(score: float) -> int:
+    """0 = proven good, 1 = neutral/unknown, 2 = poor reliability."""
+    if score >= 0.65:
+        return 0
+    if score >= 0.35:
+        return 1
+    return 2
+
+
 def _selection_key(
     src: dict,
     entry: dict,
@@ -410,8 +573,14 @@ def _selection_key(
     host_stats: dict[str, dict],
     state: dict,
     index: int,
+    now: int | None = None,
 ) -> tuple:
-    """Order trusted live sources before guesses, then quality, reliability, speed."""
+    """Unified source ranking key: reliability tier first, then quality, fresh liveness, speed.
+
+    A failed page probe always drops behind live/unprobed sources, but a plain
+    HTTP 200 on an outer HTML wrapper never outranks proven real-device playback
+    history.
+    """
     url = str(src.get("url") or "")
     host = host_of(url)
     height = int(src.get("height") or 0)
@@ -427,17 +596,19 @@ def _selection_key(
         bitrate = int(entry.get("bitrate") or 0)
     fps = float(entry.get("fps") or 0.0)
     latency = int((probe_info or {}).get("latency_ms") or 0) if probe_ok else 10**9
-    score = health_score(entry, state, url)
+    score = health_score(entry, state, url, now=now)
     if host_stats.get(host):
-        # This run's host pass rate nudges sources with no history of their own.
-        score = round(score * 0.85 + float(host_stats[host].get("rate", 0.5)) * 0.15, 4)
+        # This run's host page-pass rate nudges sources mildly; never enough to
+        # rescue a host with bad real playback history.
+        score = round(score * 0.90 + float(host_stats[host].get("rate", 0.5)) * 0.10, 4)
     return (
-        0 if probe_ok is True else (1 if probe_ok is None else 2),
-        -min(int(score * 3), 2),  # bad / unknown / good: playback history outranks labels
+        1 if probe_ok is False else 0,
+        _reliability_tier(score),
         -_quality_score(src, height),
         -min(height, 4320),
         0 if fps >= 48.0 else 1,
         0 if (src.get("verified") or entry.get("verified")) else 1,
+        0 if probe_ok is True else 1,
         -score,
         -min(bitrate, 50_000_000),
         latency,
@@ -445,7 +616,33 @@ def _selection_key(
     )
 
 
-def is_weak_source(src: dict, entry: dict, probe_ok: bool | None) -> bool:
+def _host_is_chronically_bad(state: dict | None, url: str, now: int) -> bool:
+    """True when real device playback shows this host almost never plays."""
+    if not state or not url:
+        return False
+    bucket = (state.get("hosts") or {}).get(host_of(url))
+    if not isinstance(bucket, dict):
+        return False
+    ok, fail = _decayed_pair(
+        float(bucket.get("ok") or 0),
+        float(bucket.get("fail") or 0),
+        int(bucket.get("last_ok") or 0),
+        int(bucket.get("last_fail") or 0),
+        now,
+        HOST_HALF_LIFE_DAYS * 86400.0,
+        fallback_ts=_bucket_last_ts(bucket),
+    )
+    total = ok + fail
+    return fail >= 5.0 and total >= 5.0 and (ok / total) < 0.20
+
+
+def is_weak_source(
+    src: dict,
+    entry: dict,
+    probe_ok: bool | None,
+    state: dict | None = None,
+    now: int | None = None,
+) -> bool:
     """A mirror only worth publishing when an event has little else."""
     if probe_ok is False:
         return True
@@ -454,74 +651,77 @@ def is_weak_source(src: dict, entry: dict, probe_ok: bool | None) -> bool:
         return True
     if height <= 0 and quality_rank(src) == 3:
         return True
-    app_fail = int(entry.get("app_fail") or 0)
-    app_ok = int(entry.get("app_ok") or 0)
+    app_fail = float(entry.get("app_fail") or 0)
+    app_ok = float(entry.get("app_ok") or 0)
     if app_fail >= FAIL_OMIT and app_fail > app_ok:
         return True
-    if int(entry.get("play_fail") or 0) >= 3 and not int(entry.get("play_ok") or 0) and not app_ok:
+    if int(entry.get("play_fail") or 0) >= 3 and not int(entry.get("play_ok") or 0) and app_ok <= 0:
         return True
     fail = int(entry.get("fail") or 0)
     ok_count = int(entry.get("ok") or 0)
-    return fail >= 3 and fail > ok_count and not app_ok
+    if fail >= 3 and fail > ok_count and app_ok <= 0:
+        return True
+    if app_ok <= 0 and state is not None:
+        if _host_is_chronically_bad(state, str(src.get("url") or ""), now if now is not None else _now()):
+            return True
+    return False
+
+
+def _interleave_by_host(pool: list[dict]) -> list[dict]:
+    """Round-robin wave ordering across hosts while preserving best-first order.
+
+    Wave 0 takes the highest-ranked source from each distinct host (in order of
+    each host's best source), Wave 1 takes the 2nd source from each host, etc.
+    Slot #1 is always the single best source overall, and slots #2..#k hit
+    independent CDNs before repeating any host.
+    """
+    by_host: dict[str, list[dict]] = {}
+    host_order: list[str] = []
+    for item in pool:
+        host = item.get("host") or host_of(str(item["src"].get("url") or "")) or ""
+        if host not in by_host:
+            by_host[host] = []
+            host_order.append(host)
+        by_host[host].append(item)
+    out: list[dict] = []
+    depth = max((len(v) for v in by_host.values()), default=0)
+    for wave in range(depth):
+        for host in host_order:
+            bucket = by_host[host]
+            if wave < len(bucket):
+                out.append(bucket[wave])
+    return out
 
 
 def _select_best_sources(candidates: list[dict], limit: int | None) -> list[dict]:
-    """Greedy best-N with host diversity, then fill from the same hosts.
+    """Select up to `limit` sources in host-interleaved failover order.
 
-    Liveness always wins: every probe-ok source outranks unprobed/failed
-    mirrors. Within that tier, the best source on each host is taken first so
-    one CDN outage cannot take out the whole failover stack; the remaining
-    slots are then filled with the best duplicates.
+    Non-bad sources (proven healthy or neutral, not page-failed) always come
+    before poor-reliability or page-failed mirrors. Within each band, mirrors
+    are interleaved in round-robin waves across distinct hosts so one dead or
+    ISP-blocked host cannot dominate the top of the failover stack.
     """
     if not candidates:
         return []
     if limit is not None and limit <= 0:
         return []
     ordered = sorted(candidates, key=lambda item: item["key"])
-    healthy = [item for item in ordered if item["ok"] is True]
-    unprobed = [item for item in ordered if item["ok"] is None]
-    failed = [item for item in ordered if item["ok"] is False]
+    # key[0] == 0 means not page-failed; key[1] <= 1 means healthy or neutral reliability tier.
+    primary = [item for item in ordered if item["key"][0] == 0 and item["key"][1] <= 1]
+    secondary = [item for item in ordered if not (item["key"][0] == 0 and item["key"][1] <= 1)]
     selected: list[dict] = []
     selected_urls: set[str] = set()
-    used_hosts: set[str] = set()
-
-    def diverse(pool: list[dict]) -> None:
-        for item in pool:
+    for pool in (primary, secondary):
+        for item in _interleave_by_host(pool):
             if limit is not None and len(selected) >= limit:
-                return
-            host = item["host"]
-            if host in used_hosts:
-                continue
+                return selected
             src = item["src"]
             url = str(src.get("url") or "")
-            if url in selected_urls:
+            if not url or url in selected_urls:
                 continue
             selected.append(src)
             selected_urls.add(url)
-            used_hosts.add(host)
-
-    def fill(pool: list[dict]) -> None:
-        for item in pool:
-            if limit is not None and len(selected) >= limit:
-                return
-            src = item["src"]
-            url = str(src.get("url") or "")
-            if url in selected_urls:
-                continue
-            selected.append(src)
-            selected_urls.add(url)
-
-    for pool in (healthy, unprobed, failed):
-        diverse(pool)
-        fill(pool)
-        if limit is not None and len(selected) >= limit:
-            break
-    # Keep the diverse membership but play the best source first: a lower-quality
-    # mirror on a new host is a fallback, not something to try before a better
-    # duplicate on a host that already answered.
-    key_by_url = {str(item["src"].get("url") or ""): item["key"] for item in candidates}
-    selected.sort(key=lambda src: key_by_url.get(str(src.get("url") or ""), ()))
-    return selected if limit is None else selected[:limit]
+    return selected
 
 
 def ranked_sources(
@@ -532,6 +732,7 @@ def ranked_sources(
     include_disabled: bool = False,
     blocklist: dict | None = None,
 ) -> list[dict]:
+    """Rank sources using the unified `_selection_key` (shared with scheduler and publisher)."""
     entries = state.get("sources", {})
     blocklist = blocklist or {"urls": set(), "hosts": set()}
     out = []
@@ -551,16 +752,10 @@ def ranked_sources(
         if not include_disabled and is_disabled(entry, now):
             continue
         seen.add(url)
-        out.append((src, index, entry))
-    out.sort(key=lambda item: (
-        quality_rank(item[0]),
-        0 if item[0].get("verified") else 1,
-        -int(item[0].get("bitrate") or 0),
-        _health_rank(item[2]),
-        _host_rank(state, str(item[0].get("url") or "")),
-        item[1],
-    ))
-    return [item[0] for item in out]
+        key = _selection_key(src, entry, None, None, {}, state, index, now=now)
+        out.append((key, src))
+    out.sort(key=lambda item: item[0])
+    return [item[1] for item in out]
 
 
 def _read_limited(response, limit: int) -> bytes:
@@ -1475,19 +1670,57 @@ def record_vantage(entry: dict, vantage: str, ok: bool, when: int, now: int | No
 
 def _halve_if_large(entry: dict, ok_key: str, fail_key: str, cap: int = 40) -> None:
     """Keep counts recent: once a pair passes `cap`, halve both."""
-    if int(entry.get(ok_key) or 0) + int(entry.get(fail_key) or 0) > cap:
-        entry[ok_key] = int(entry.get(ok_key) or 0) // 2
-        entry[fail_key] = int(entry.get(fail_key) or 0) // 2
+    if float(entry.get(ok_key) or 0) + float(entry.get(fail_key) or 0) > cap:
+        entry[ok_key] = round(float(entry.get(ok_key) or 0) / 2.0, 3)
+        entry[fail_key] = round(float(entry.get(fail_key) or 0) / 2.0, 3)
 
 
-def record_app_result(state: dict, url: str, device: str, ok: bool, when: int, now: int,
-                      height: int = 0, fps: float = 0.0, kbps: int = 0) -> None:
-    """An app's playback verdict: the main health signal."""
+def _qoe_credits(
+    ok: bool,
+    *,
+    reason: str = "",
+    rebuffer_count: int = 0,
+    audio_ok: bool | None = None,
+) -> tuple[float, float]:
+    """Translate a playback verdict + QoE hints into (ok_credit, fail_credit)."""
+    if not ok:
+        return 0.0, 1.0
+    if reason == "video_no_audio" or audio_ok is False:
+        return 0.4, 0.6
+    if int(rebuffer_count or 0) >= 3:
+        return 0.5, 0.5
+    return 1.0, 0.0
+
+
+def record_app_result(
+    state: dict,
+    url: str,
+    device: str,
+    ok: bool,
+    when: int,
+    now: int,
+    height: int = 0,
+    fps: float = 0.0,
+    kbps: int = 0,
+    *,
+    reason: str = "",
+    watch_sec: int = 0,
+    rebuffer_count: int = 0,
+    audio_ok: bool | None = None,
+) -> None:
+    """An app's real playback verdict: the primary health signal."""
     entry = _entry(state, url)
-    if ok:
-        entry["app_ok"] = int(entry.get("app_ok") or 0) + 1
+    ok_credit, fail_credit = _qoe_credits(
+        ok, reason=reason, rebuffer_count=rebuffer_count, audio_ok=audio_ok,
+    )
+    if ok_credit > 0:
+        entry["app_ok"] = round(float(entry.get("app_ok") or 0) + ok_credit, 3)
         entry["app_last_ok"] = max(int(entry.get("app_last_ok") or 0), when)
         entry["last_ok"] = max(int(entry.get("last_ok") or 0), when)
+    if fail_credit > 0:
+        entry["app_fail"] = round(float(entry.get("app_fail") or 0) + fail_credit, 3)
+        entry["app_last_fail"] = max(int(entry.get("app_last_fail") or 0), when)
+    if ok:
         if height >= 480:
             entry["verified"] = True
         # It plays for a viewer: lift any quarantine or automatic block.
@@ -1497,9 +1730,6 @@ def record_app_result(state: dict, url: str, device: str, ok: bool, when: int, n
             entry["dead_fails"] = 0
             entry.pop("blocked_reason", None)
             entry.pop("blocked_at", None)
-    else:
-        entry["app_fail"] = int(entry.get("app_fail") or 0) + 1
-        entry["app_last_fail"] = max(int(entry.get("app_last_fail") or 0), when)
     _halve_if_large(entry, "app_ok", "app_fail")
     if height > 0:
         entry["height"] = max(int(entry.get("height") or 0), height)
@@ -1507,7 +1737,46 @@ def record_app_result(state: dict, url: str, device: str, ok: bool, when: int, n
         entry["fps"] = max(float(entry.get("fps") or 0.0), round(fps, 1))
     if kbps > 0:
         entry["bitrate"] = max(int(entry.get("bitrate") or 0), kbps * 1000)
+    fam = url_family(url)
+    if fam:
+        fb = state.setdefault("families", {}).setdefault(fam, {"ok": 0.0, "fail": 0.0})
+        _update_decayed_bucket(fb, ok_credit, fail_credit, when, HOST_HALF_LIFE_DAYS * 86400.0)
+        if height > 0:
+            fb["height"] = max(int(fb.get("height") or 0), height)
     record_vantage(entry, device or "app", ok, when, now)
+
+
+def record_scan_result(
+    state: dict,
+    url: str,
+    ok: bool,
+    when: int,
+    now: int,
+    height: int = 0,
+    fps: float = 0.0,
+    kbps: int = 0,
+) -> None:
+    """Background on-device probe verdict (`source_scan`).
+
+    Weighs much less than real user playback (`SCAN_WEIGHT`) and never triggers
+    quarantine streaks so background timeouts on a busy TV cannot kill streams.
+    """
+    entry = _entry(state, url)
+    if ok:
+        entry["scan_ok"] = round(float(entry.get("scan_ok") or 0) + 1.0, 3)
+        if height >= 480:
+            entry["verified"] = True
+    else:
+        entry["scan_fail"] = round(float(entry.get("scan_fail") or 0) + 1.0, 3)
+    entry["scan_last"] = max(int(entry.get("scan_last") or 0), when)
+    _halve_if_large(entry, "scan_ok", "scan_fail", cap=20)
+    if ok:
+        if height > 0:
+            entry["height"] = max(int(entry.get("height") or 0), height)
+        if fps > 0:
+            entry["fps"] = max(float(entry.get("fps") or 0.0), round(fps, 1))
+        if kbps > 0:
+            entry["bitrate"] = max(int(entry.get("bitrate") or 0), kbps * 1000)
 
 
 def record_playback(state: dict, url: str, result: dict, now: int) -> None:
@@ -1531,22 +1800,75 @@ def record_playback(state: dict, url: str, result: dict, now: int) -> None:
     _halve_if_large(entry, "play_ok", "play_fail")
 
 
-def health_score(entry: dict, state: dict | None = None, url: str = "") -> float:
-    """0..1, app playback first, then playback probes, then page checks, then the host's record."""
-    def part(ok: int, fail: int, weight: float, damp: float = 1.0) -> tuple[float, float]:
-        n = ok + fail
-        return (ok + 1) / (n + 2), weight * n / (n + damp)
+def health_score(
+    entry: dict,
+    state: dict | None = None,
+    url: str = "",
+    now: int | None = None,
+) -> float:
+    """0..1 empirical Bayes reliability score with exponential time decay.
 
+    Hierarchy: real app playback > host & stream-family priors > CI playback
+    probes > background scans > outer-HTML page checks > neutral prior (0.5).
+    """
+    def part(ok: float, fail: float, weight: float, damp: float = 1.0) -> tuple[float, float]:
+        n = ok + fail
+        if n <= 0:
+            return 0.5, 0.0
+        return (ok + 1.0) / (n + 2.0), weight * n / (n + damp)
+
+    ref_now = _now() if now is None else now
+    url_hl = URL_HALF_LIFE_HOURS * 3600.0
+    host_hl = HOST_HALF_LIFE_DAYS * 86400.0
     entry = entry or {}
+
+    app_ok, app_fail = _decayed_pair(
+        float(entry.get("app_ok") or 0), float(entry.get("app_fail") or 0),
+        int(entry.get("app_last_ok") or 0), int(entry.get("app_last_fail") or 0),
+        ref_now, url_hl,
+    )
+    scan_ok, scan_fail = _decayed_pair(
+        float(entry.get("scan_ok") or 0), float(entry.get("scan_fail") or 0),
+        int(entry.get("scan_last") or 0), int(entry.get("scan_last") or 0),
+        ref_now, url_hl,
+    )
+    play_ok, play_fail = _decayed_pair(
+        float(entry.get("play_ok") or 0), float(entry.get("play_fail") or 0),
+        int(entry.get("last_play") or 0), int(entry.get("last_play_fail") or 0),
+        ref_now, url_hl,
+    )
+    page_ok, page_fail = _decayed_pair(
+        float(entry.get("ok") or 0), float(entry.get("fail") or 0),
+        int(entry.get("last_ok") or 0), int(entry.get("last_fail") or 0),
+        ref_now, url_hl,
+    )
+
     parts = [
-        part(int(entry.get("app_ok") or 0), int(entry.get("app_fail") or 0), APP_WEIGHT),
-        part(int(entry.get("play_ok") or 0), int(entry.get("play_fail") or 0), PLAYBACK_WEIGHT),
-        part(int(entry.get("ok") or 0), int(entry.get("fail") or 0), PAGE_WEIGHT),
-        (0.5, 0.5),  # prior
+        part(app_ok, app_fail, APP_WEIGHT, 1.0),
+        part(play_ok, play_fail, PLAYBACK_WEIGHT, 1.0),
+        part(scan_ok, scan_fail, SCAN_WEIGHT, 2.0),
+        part(page_ok, page_fail, PAGE_WEIGHT, 1.5),
+        (0.5, 0.5),  # neutral prior
     ]
-    host = ((state or {}).get("hosts") or {}).get(host_of(url)) if url else None
-    if isinstance(host, dict):
-        parts.append(part(int(host.get("ok") or 0), int(host.get("fail") or 0), 0.5, 3.0))
+    if url and isinstance(state, dict):
+        fam = url_family(url)
+        fam_bucket = (state.get("families") or {}).get(fam) if fam else None
+        if isinstance(fam_bucket, dict):
+            f_ok, f_fail = _decayed_pair(
+                float(fam_bucket.get("ok") or 0), float(fam_bucket.get("fail") or 0),
+                int(fam_bucket.get("last_ok") or 0), int(fam_bucket.get("last_fail") or 0),
+                ref_now, host_hl, fallback_ts=_bucket_last_ts(fam_bucket),
+            )
+            parts.append(part(f_ok, f_fail, FAMILY_WEIGHT, 3.0))
+        host_bucket = (state.get("hosts") or {}).get(host_of(url))
+        if isinstance(host_bucket, dict):
+            h_ok, h_fail = _decayed_pair(
+                float(host_bucket.get("ok") or 0), float(host_bucket.get("fail") or 0),
+                int(host_bucket.get("last_ok") or 0), int(host_bucket.get("last_fail") or 0),
+                ref_now, host_hl, fallback_ts=_bucket_last_ts(host_bucket),
+            )
+            parts.append(part(h_ok, h_fail, HOST_WEIGHT, 3.0))
+
     total = sum(w for _, w in parts)
     return round(sum(r * w for r, w in parts) / total, 4) if total else 0.5
 
@@ -1625,12 +1947,151 @@ def _record(state: dict, url: str, ok: bool, detail: str, now: int,
         entry["disabled_until"] = 0
 
 
+def _channel_url_key(url: str) -> str:
+    return hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_channel_app_result(state: dict, url: str, ok: bool, when: int) -> None:
+    """Fold real TV/app playback outcomes into tracked Live TV channel URLs."""
+    ch_urls = (state.get("channels") or {}).get("urls")
+    if not isinstance(ch_urls, dict) or not url:
+        return
+    rec = ch_urls.get(_channel_url_key(url))
+    if not isinstance(rec, dict):
+        return
+    if ok:
+        rec["app_ok"] = int(rec.get("app_ok") or 0) + 1
+        rec["app_last_ok"] = max(int(rec.get("app_last_ok") or 0), when)
+        rec["app_fail_streak"] = 0
+        rec["fail_streak"] = 0
+        rec["demoted"] = False
+    else:
+        rec["app_fail"] = int(rec.get("app_fail") or 0) + 1
+        rec["app_last_fail"] = max(int(rec.get("app_last_fail") or 0), when)
+        rec["app_fail_streak"] = int(rec.get("app_fail_streak") or 0) + 1
+        if rec["app_fail_streak"] >= 3:
+            rec["demoted"] = True
+
+
+def ingest_telemetry_rows(
+    state: dict,
+    files: dict[str, list[dict]],
+    now: int | None = None,
+) -> dict:
+    """Fold parsed per-file telemetry rows into `state` using per-file cursors.
+
+    Accepts both `url` (desktop Slang) and `source_url` (Android TV Slang),
+    prefers unique `device_id` over `device` for vantage tracking, separates
+    real `source_result` playback from background `source_scan`, and decays
+    host/family buckets over `HOST_HALF_LIFE_DAYS`.
+    """
+    ref_now = _now() if now is None else now
+    legacy_ts = str(state.get("last_telemetry_ts") or "")
+    first_migration = "telemetry_cursors" not in state
+    cursors: dict = state.setdefault("telemetry_cursors", {})
+    hosts = state.setdefault("hosts", {})
+    max_global_ts = legacy_ts
+    processed = 0
+    half_life_sec = HOST_HALF_LIFE_DAYS * 86400.0
+
+    for name, rows in files.items():
+        # Legacy migration (once): seed cursors for already-existing files from
+        # `last_telemetry_ts` so old host counts are not double-counted. After
+        # migration, every new device/day file starts from "" so delayed flushes
+        # are never dropped by another device's clock.
+        if name in cursors:
+            file_cursor = str(cursors[name] or "")
+        elif first_migration and legacy_ts:
+            file_cursor = legacy_ts
+        else:
+            file_cursor = ""
+        file_max = file_cursor
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ts = str(row.get("ts") or "")
+            if ts and file_cursor and ts <= file_cursor:
+                continue
+            if ts > file_max:
+                file_max = ts
+            if ts > max_global_ts:
+                max_global_ts = ts
+            rtype = row.get("type")
+            url = str(row.get("url") or row.get("source_url") or "").strip()
+            host = str(row.get("source_host") or row.get("host") or host_of(url)).strip().lower()
+            if not host:
+                continue
+            when = _iso_epoch(ts) or ref_now
+            bucket = hosts.setdefault(host, {"ok": 0.0, "fail": 0.0, "height": 0, "stream_kbps": 0, "last_seen": ""})
+            if rtype == "source_result":
+                ok_val = bool(row.get("ok"))
+                reason = str(row.get("reason") or "")
+                rebuffer_count = int(row.get("rebuffer_count") or 0)
+                audio_ok = row.get("audio_ok") if isinstance(row.get("audio_ok"), bool) else None
+                ok_credit, fail_credit = _qoe_credits(
+                    ok_val, reason=reason, rebuffer_count=rebuffer_count, audio_ok=audio_ok,
+                )
+                _update_decayed_bucket(bucket, ok_credit, fail_credit, when, half_life_sec)
+                h = int(row.get("height") or 0)
+                fps = float(row.get("fps") or 0.0)
+                kbps = int(row.get("bitrate_kbps") or row.get("stream_kbps") or 0)
+                if h > 0:
+                    bucket["height"] = max(int(bucket.get("height") or 0), h)
+                if kbps > 0:
+                    bucket["stream_kbps"] = max(int(bucket.get("stream_kbps") or 0), kbps)
+                device = str(row.get("device_id") or row.get("device") or "app").strip()
+                if url.startswith("https://"):
+                    record_app_result(
+                        state, url, device, ok_val, when, ref_now,
+                        height=h, fps=fps, kbps=kbps,
+                        reason=reason,
+                        watch_sec=int(row.get("watch_sec") or 0),
+                        rebuffer_count=rebuffer_count,
+                        audio_ok=audio_ok,
+                    )
+                    _record_channel_app_result(state, url, ok_val, when)
+                processed += 1
+            elif rtype == "source_scan":
+                ok_val = bool(row.get("ok"))
+                h = int(row.get("height") or 0)
+                fps = float(row.get("fps") or 0.0)
+                kbps = int(row.get("bitrate_kbps") or row.get("stream_kbps") or 0)
+                if ok_val:
+                    if h > 0:
+                        bucket["height"] = max(int(bucket.get("height") or 0), h)
+                    if kbps > 0:
+                        bucket["stream_kbps"] = max(int(bucket.get("stream_kbps") or 0), kbps)
+                if url.startswith("https://"):
+                    record_scan_result(state, url, ok_val, when, ref_now, height=h, fps=fps, kbps=kbps)
+                processed += 1
+            elif rtype in ("first_frame", "source_quality"):
+                h = int(row.get("height") or 0)
+                kbps = int(row.get("stream_kbps") or 0)
+                if h > 0:
+                    bucket["height"] = max(int(bucket.get("height") or 0), h)
+                if kbps > 0:
+                    bucket["stream_kbps"] = max(int(bucket.get("stream_kbps") or 0), kbps)
+                processed += 1
+            if ts and ts > str(bucket.get("last_seen") or ""):
+                bucket["last_seen"] = ts
+        if file_max:
+            cursors[name] = file_max
+
+    # Drop cursors for files deleted from the telemetry branch.
+    for old_name in list(cursors.keys()):
+        if old_name not in files:
+            cursors.pop(old_name, None)
+    if max_global_ts:
+        state["last_telemetry_ts"] = max_global_ts
+    return {"rows": processed, "hosts": len(hosts)}
+
+
 def ingest_telemetry_from_git(
     state_path: str | os.PathLike = DEFAULT_STATE,
     repo_dir: str | os.PathLike = ".",
     ref: str = "origin/telemetry",
 ) -> dict:
-    """Fold on-device playback telemetry (host success rate + resolution) into state."""
+    """Fold on-device playback telemetry (host/family/URL reliability + resolution) into state."""
     import subprocess
 
     try:
@@ -1643,12 +2104,7 @@ def ingest_telemetry_from_git(
         return {"rows": 0, "hosts": 0}
 
     state = load_state(state_path)
-    now = _now()
-    last_ts = str(state.get("last_telemetry_ts") or "")
-    max_ts = last_ts
-    hosts = state.setdefault("hosts", {})
-    processed = 0
-
+    parsed_files: dict[str, list[dict]] = {}
     for name in names:
         if not name.endswith(".jsonl"):
             continue
@@ -1660,6 +2116,7 @@ def ingest_telemetry_from_git(
             )
         except Exception:
             continue
+        rows: list[dict] = []
         for line in text.splitlines():
             line = line.strip()
             if not line:
@@ -1668,53 +2125,14 @@ def ingest_telemetry_from_git(
                 row = json.loads(line)
             except Exception:
                 continue
-            if not isinstance(row, dict):
-                continue
-            ts = str(row.get("ts") or "")
-            if ts and last_ts and ts <= last_ts:
-                continue
-            if ts > max_ts:
-                max_ts = ts
-            rtype = row.get("type")
-            url = str(row.get("url") or "").strip()
-            host = str(row.get("source_host") or row.get("host") or host_of(url)).strip().lower()
-            if not host:
-                continue
-            bucket = hosts.setdefault(host, {"ok": 0, "fail": 0, "height": 0, "stream_kbps": 0, "last_seen": ""})
-            if rtype in ("source_result", "source_scan"):
-                ok_val = bool(row.get("ok"))
-                if ok_val:
-                    bucket["ok"] = int(bucket.get("ok") or 0) + 1
-                else:
-                    bucket["fail"] = int(bucket.get("fail") or 0) + 1
-                h = int(row.get("height") or 0)
-                fps = float(row.get("fps") or 0.0)
-                kbps = int(row.get("bitrate_kbps") or row.get("stream_kbps") or 0)
-                if h > 0:
-                    bucket["height"] = max(int(bucket.get("height") or 0), h)
-                if kbps > 0:
-                    bucket["stream_kbps"] = max(int(bucket.get("stream_kbps") or 0), kbps)
-                if url.startswith("https://"):
-                    record_app_result(
-                        state, url, str(row.get("device") or "app"), ok_val,
-                        _iso_epoch(ts) or now, now, height=h, fps=fps, kbps=kbps,
-                    )
-                processed += 1
-            elif rtype in ("first_frame", "source_quality"):
-                h = int(row.get("height") or 0)
-                kbps = int(row.get("stream_kbps") or 0)
-                if h > 0:
-                    bucket["height"] = max(int(bucket.get("height") or 0), h)
-                if kbps > 0:
-                    bucket["stream_kbps"] = max(int(bucket.get("stream_kbps") or 0), kbps)
-                processed += 1
-            if ts:
-                bucket["last_seen"] = ts
+            if isinstance(row, dict):
+                rows.append(row)
+        parsed_files[name] = rows
 
-    if processed > 0:
-        state["last_telemetry_ts"] = max_ts
+    result = ingest_telemetry_rows(state, parsed_files)
+    if result["rows"] > 0 or state.get("telemetry_cursors"):
         save_state(state_path, state, state.get("stats") or {})
-    return {"rows": processed, "hosts": len(hosts)}
+    return result
 
 
 def apply_source_health(
@@ -1924,19 +2342,18 @@ def apply_source_health(
                 "src": src,
                 "host": host_of(url),
                 "ok": probe_ok,
-                "weak": is_weak_source(src, entry, probe_ok),
+                "weak": is_weak_source(src, entry, probe_ok, state=state, now=now),
                 "key": _selection_key(
-                    src, entry, detailed.get(url), probe_ok, host_stats, state, index
+                    src, entry, detailed.get(url), probe_ok, host_stats, state, index, now=now
                 ),
             })
-        if limit is None:
-            # No count cap, but weak mirrors only fill thin events.
-            good = [c for c in candidates if not c["weak"]]
-            weak = sorted((c for c in candidates if c["weak"]), key=lambda c: c["key"])
-            keep = max(0, MIN_SOURCES_PER_EVENT - len(good))
-            weak_dropped += max(0, len(weak) - keep)
-            weak_kept += min(len(weak), keep)
-            candidates = good + weak[:keep]
+        # Weak mirrors (low res, failing, or chronically dead host) only fill thin events.
+        good = [c for c in candidates if not c["weak"]]
+        weak = sorted((c for c in candidates if c["weak"]), key=lambda c: c["key"])
+        keep = max(0, MIN_SOURCES_PER_EVENT - len(good))
+        weak_dropped += max(0, len(weak) - keep)
+        weak_kept += min(len(weak), keep)
+        candidates = good + weak[:keep]
         final = _select_best_sources(candidates, limit)
         if len(final) != len(source_list):
             trimmed += 1
